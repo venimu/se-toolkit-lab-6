@@ -336,7 +336,7 @@ This is an important step that will make your life easier. The agent we will use
   What is this lab supposed to teach me.
   ```
   
-  > [!Note] It is my personal preference to use terminal version of the agent, yet there are other ways to use it as an VS Code extension, read more here if interested: [AI coding agent setup](../../wiki/coding-agents.md)
+  > [!NOTE] It is my personal preference to use terminal version of the agent, yet there are other ways to use it as an VS Code extension, read more here if interested: [AI coding agent setup](../../wiki/coding-agents.md)
 
 ----
 

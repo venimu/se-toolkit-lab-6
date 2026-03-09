@@ -1,14 +1,19 @@
 ---
 name: review-file-by-conventions
-description: Review a file for convention violations
+description: "Review a file for convention violations. Supports lab/tasks/ files (conceptual + convention review), wiki/ files, contributing/conventions/ files, and instructors/meetings/ meeting-report.md files (cross-checked against the transcript and files discussed). Writes the review report to instructors/file-reviews/."
 argument-hint: "<path>"
 ---
 
-Review a single file for problems — first conceptual and pedagogical issues, then convention violations. The file must be under `lab/tasks/`, `wiki/`, or `contributing/conventions/`.
+Review a single file for problems — first conceptual and pedagogical issues (for task files) or transcript cross-check (for meeting reports), then convention violations. Accepted locations: `lab/tasks/`, `wiki/`, `contributing/conventions/`, and `instructors/meetings/` (meeting-report.md files only).
 
 ## Steps
 
-1. Parse `$ARGUMENTS` to get the file path. Accept paths under `lab/tasks/` (e.g., `lab/tasks/setup.md`, `lab/tasks/required/task-2.md`), `wiki/` (e.g., `wiki/web-development.md`), or `contributing/conventions/` (e.g., `contributing/conventions/writing/common.md`). If the path is missing or does not point to a file under one of these directories, ask the user.
+1. Parse `$ARGUMENTS` to get the file path. Accept:
+   - Paths under `lab/tasks/` (e.g., `lab/tasks/setup.md`, `lab/tasks/required/task-2.md`)
+   - Paths under `wiki/` (e.g., `wiki/web-development.md`)
+   - Paths under `contributing/conventions/` (e.g., `contributing/conventions/writing/common.md`)
+   - Meeting report files matching the pattern `instructors/meetings/week-N/meeting-M/meeting-report.md` (e.g., `instructors/meetings/week-2/meeting-1/meeting-report.md`)
+   If the path is missing or does not match one of these patterns, ask the user.
 2. Read the target file.
 3. Read the convention files that apply to the target file:
    - **For `lab/tasks/` files:**
@@ -19,10 +24,19 @@ Review a single file for problems — first conceptual and pedagogical issues, t
      - [`contributing/conventions/writing/wiki.md`](../../../contributing/conventions/writing/wiki.md) — wiki file structure and section patterns
    - **For `contributing/conventions/` files:**
      - [`contributing/conventions/conventions.md`](../../../contributing/conventions/conventions.md) — conventions for writing conventions
-4. **Conceptual review** (only for `lab/tasks/` files): Analyse the file against each dimension (D1–D10) from Section 13 of [`contributing/conventions/writing/tasks.md`](../../../contributing/conventions/writing/tasks.md). For each problem found, record: the dimension, the line number(s) or section, a short description, severity (`[High]`, `[Medium]`, or `[Low]`), and a suggested fix.
-5. **Convention review**: Go through the target file **line by line**. Check it against **every** convention in the applicable convention files. Flag each violation with its line number.
-6. Scan for `<!-- TODO ... -->` comments. Report each one with its line number and the comment text.
-7. Scan for empty sections: a heading immediately followed by another heading, a `<!-- TODO ... -->` comment, or end of file, with no real content lines in between. Report each empty section with its line number and heading text.
+   - **For `instructors/meetings/` meeting-report.md files:**
+     - [`contributing/conventions/meeting-report.md`](../../../contributing/conventions/meeting-report.md) — meeting report format rules (Sections 3–4) and the five review categories (Section 5)
+4. (**For `instructors/meetings/` files only**) Derive the transcript path by replacing `meeting-report.md` with `transcripts/transcript-by-speaker.txt` in the report path (e.g., `instructors/meetings/week-2/meeting-1/transcripts/transcript-by-speaker.txt`). Read the transcript. If the report's **Metadata → Files discussed** section lists any files, read each of them.
+5. **Conceptual review** (only for `lab/tasks/` files): Analyse the file against each dimension (D1–D10) from Section 13 of [`contributing/conventions/writing/tasks.md`](../../../contributing/conventions/writing/tasks.md). For each problem found, record: the dimension, the line number(s) or section, a short description, severity (`[High]`, `[Medium]`, or `[Low]`), and a suggested fix.
+6. **Meeting report review** (only for `instructors/meetings/` files): Analyse the report against the five categories in Section 5 of [`contributing/conventions/meeting-report.md`](../../../contributing/conventions/meeting-report.md). For each finding, cite the relevant transcript line or report line number:
+   - **5.1. Transcript coverage** — Go through the transcript line by line. Flag each substantive point, decision, question, disagreement, example, or topic that is missing or under-represented in the report.
+   - **5.2. Accuracy** — Flag each claim in the report that contradicts the transcript (wrong speaker attribution, incorrect timestamp, misquote, decision recorded as unanimous when there was dissent, etc.).
+   - **5.3. Files discussed** — For each file listed under Metadata → Files discussed, verify that the report's references to that file's content are consistent with the actual file. Flag every mismatch. Skip if no files are listed.
+   - **5.4. Format compliance** — Check the report against Sections 3 (General rules) and 4 (Sections) of the conventions. Flag violations: missing sections, items written as bullet lists instead of subsections, bold labels used instead of headings, PII leaks, missing cross-references, etc.
+   - **5.5. Internal consistency** — Flag contradictions within the report itself: a decision conflicting with an open question, an action point referencing a non-existent decision, broken anchor links, duplicate numbering, etc.
+7. **Convention review** (for `lab/tasks/`, `wiki/`, and `contributing/conventions/` files only): Go through the target file **line by line**. Check it against **every** convention in the applicable convention files. Flag each violation with its line number.
+8. Scan for `<!-- TODO ... -->` comments. Report each one with its line number and the comment text.
+9. Scan for empty sections: a heading immediately followed by another heading, a `<!-- TODO ... -->` comment, or end of file, with no real content lines in between. Report each empty section with its line number and heading text.
 
 ## Rules
 
@@ -36,15 +50,16 @@ Review a single file for problems — first conceptual and pedagogical issues, t
 
 ## Output format
 
-Write the report to `instructors/file-reviews/<repo-root-path>`, where `<repo-root-path>` is the file's path from the repository root (e.g., `instructors/file-reviews/lab/tasks/setup.md` for `lab/tasks/setup.md`, `instructors/file-reviews/wiki/web-development.md` for `wiki/web-development.md`, `instructors/file-reviews/contributing/conventions/writing/common.md` for `contributing/conventions/writing/common.md`). Create intermediate directories if they do not exist.
+Write the report to `instructors/file-reviews/<repo-root-path>`, where `<repo-root-path>` is the file's path from the repository root (e.g., `instructors/file-reviews/lab/tasks/setup.md` for `lab/tasks/setup.md`, `instructors/file-reviews/instructors/meetings/week-2/meeting-1/meeting-report.md` for `instructors/meetings/week-2/meeting-1/meeting-report.md`). Create intermediate directories if they do not exist.
 
 The report must be self-contained so another session or agent can act on it without extra context. Structure:
 
-1. **Header** — file path reviewed, date, convention files used.
+1. **Header** — file path reviewed, date, convention files used, transcript path (for meeting reports only).
 2. **Conceptual findings** (only for `lab/tasks/` files) — grouped by dimension (D1–D10). Under each dimension, list findings as numbered items with severity, line number(s) or section, description, and suggested fix. If a dimension has no findings, write "No issues found."
-3. **Convention findings** — grouped by convention number (e.g., "4.2. Terminal commands", "Section 3. Task document structure"). Under each group, list findings as numbered items with line numbers. If a group has no findings, write "No issues found."
-4. **TODOs** — list every `<!-- TODO ... -->` comment with its line number and text. If none, write "No TODOs found."
-5. **Empty sections** — list every heading that has no content (only a TODO comment, another heading, or EOF follows). Include line number and heading text. If none, write "No empty sections found."
-6. **Summary** — total finding count (conceptual by severity + convention violations + TODOs + empty sections) and a short overall assessment.
+3. **Meeting report findings** (only for `instructors/meetings/` files) — grouped by review category (5.1 Transcript coverage, 5.2 Accuracy, 5.3 Files discussed, 5.4 Format compliance, 5.5 Internal consistency). Under each category, list findings as numbered items with the relevant transcript or report line number, description, and suggested fix. If a category has no findings, write "No issues found."
+4. **Convention findings** (for `lab/tasks/`, `wiki/`, and `contributing/conventions/` files only) — grouped by convention number (e.g., "4.2. Terminal commands", "Section 3. Task document structure"). Under each group, list findings as numbered items with line numbers. If a group has no findings, write "No issues found."
+5. **TODOs** — list every `<!-- TODO ... -->` comment with its line number and text. If none, write "No TODOs found."
+6. **Empty sections** — list every heading that has no content (only a TODO comment, another heading, or EOF follows). Include line number and heading text. If none, write "No empty sections found."
+7. **Summary** — total finding count and a short overall assessment.
 
 After writing the file, print its path in the conversation so the user can find it.

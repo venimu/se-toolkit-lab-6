@@ -1,59 +1,45 @@
-# Build the Data Pipeline
+# Basic Agent Loop
 
 <h4>Time</h4>
 
-~50 min
+~60 min
 
 <h4>Purpose</h4>
 
-Build an ETL pipeline that fetches data from an external API and loads it into the database.
+Build a CLI agent that connects to an LLM and answers questions about the course.
 
 <h4>Context</h4>
 
-The database starts empty. We can get anonymized data on task completions in `Autochecker` API. Your job is to build a pipeline that fetches this data and populates your database so the system can serve it through existing endpoints to display as analytics.
+You have a fully deployed Learning Management Service — backend, database with analytics data, and a frontend dashboard. Now you will build an **agent**: a Python CLI program that takes a question as input, sends it to a Large Language Model (LLM), and returns a structured JSON answer.
+
+In this task you build the basic loop — no tools yet. The agent should be able to answer general knowledge questions about course topics (Git, REST, Docker, SQL, testing, ETL, agents) using only the LLM's knowledge and a well-crafted system prompt.
+
+<h4>What is an agent?</h4>
+
+An agent is a program that uses an LLM to reason and act. The simplest agent loop is:
+
+```
+User question → System prompt + question → LLM API → Answer
+```
+
+In later tasks you will extend this to:
+
+```
+User question → LLM → Tool call → Execute tool → Feed result back → LLM → Answer
+```
 
 <h4>Diagram</h4>
 
 ```mermaid
 sequenceDiagram
-    actor Developer
-    participant API as Autochecker API<br/>(instructors' VM)
-    participant Local as App+DB<br/>(your computer)
-    participant GH as GitHub
-    participant VM as App+DB<br/>(your VM)
+    actor User
+    participant CLI as agent.py
+    participant LLM as LLM API<br/>(OpenRouter / other)
 
-    Note over Developer,API: Part A — Explore the API
-    Developer->>API: curl /api/items
-    API-->>Developer: Item catalog JSON
-    Developer->>API: curl /api/logs?limit=5
-    API-->>Developer: Check logs JSON
-    Developer->>API: curl /api/logs?since=...
-    API-->>Developer: Recent logs JSON
-
-    Note over Developer,VM: Part B — Build and test the pipeline
-    Developer->>Local: docker compose up --build
-    Developer->>Local: POST /pipeline/sync
-    Local->>API: Fetch all items
-    API-->>Local: Items
-    Local->>API: Fetch all logs (paginated)
-    API-->>Local: Logs
-    Local-->>Developer: {"new_records": N, "total_records": N}
-    Developer->>Local: GET /items/
-    Developer->>Local: GET /learners/
-    Developer->>Local: GET /interactions/
-    Developer->>Local: POST /pipeline/sync (idempotency check)
-    Local-->>Developer: {"new_records": 0, "total_records": N}
-
-    Developer->>GH: git push
-    Developer->>VM: git pull
-    Developer->>VM: docker compose up --build
-    Developer->>VM: POST /pipeline/sync
-    VM->>API: Fetch all items
-    API-->>VM: Items
-    VM->>API: Fetch all logs (paginated)
-    API-->>VM: Logs
-    VM-->>Developer: {"new_records": N, "total_records": N}
-    Developer->>GH: Create PR
+    User->>CLI: python agent.py '{"question": "..."}'
+    CLI->>LLM: POST /chat/completions
+    LLM-->>CLI: {"choices": [{"message": {"content": "..."}}]}
+    CLI->>User: {"answer": "...", "tool_calls": []}
 ```
 
 <h4>Table of contents</h4>
@@ -61,20 +47,16 @@ sequenceDiagram
 - [1. Steps](#1-steps)
   - [1.1. Follow the `Git workflow`](#11-follow-the-git-workflow)
   - [1.2. Create a `Lab Task` issue](#12-create-a-lab-task-issue)
-  - [1.3. Part A: Explore the API](#13-part-a-explore-the-api)
-    - [1.3.1. Fetch the item catalog](#131-fetch-the-item-catalog)
-    - [1.3.2. Fetch check logs](#132-fetch-check-logs)
-    - [1.3.3. Test incremental sync](#133-test-incremental-sync)
-  - [1.4. Part B: Build the pipeline](#14-part-b-build-the-pipeline)
-    - [1.4.1. Read the code stubs](#141-read-the-code-stubs)
-    - [1.4.2. Implement the pipeline (AI)](#142-implement-the-pipeline-ai)
-    - [1.4.3. Run and test locally](#143-run-and-test-locally)
-    - [1.4.4. Verify the data locally](#144-verify-the-data-locally)
-    - [1.4.5. Test idempotency locally](#145-test-idempotency-locally)
-    - [1.4.6. Commit and push your work](#146-commit-and-push-your-work)
-    - [1.4.7. Update and test on the VM](#147-update-and-test-on-the-vm)
-  - [1.5. Finish the task](#15-finish-the-task)
-  - [1.6. Check the task using the autochecker](#16-check-the-task-using-the-autochecker)
+  - [1.3. Plan the implementation](#13-plan-the-implementation)
+  - [1.4. Choose an LLM provider](#14-choose-an-llm-provider)
+  - [1.5. Build the agent](#15-build-the-agent)
+  - [1.6. Test locally](#16-test-locally)
+  - [1.7. Document your solution](#17-document-your-solution)
+  - [1.8. Add regression tests](#18-add-regression-tests)
+  - [1.9. Commit and push your work](#19-commit-and-push-your-work)
+  - [1.10. Deploy and test on the VM](#110-deploy-and-test-on-the-vm)
+  - [1.11. Finish the task](#111-finish-the-task)
+  - [1.12. Check the task using the autochecker](#112-check-the-task-using-the-autochecker)
 - [2. Acceptance criteria](#2-acceptance-criteria)
 
 ## 1. Steps
@@ -88,286 +70,230 @@ Follow the [`Git workflow`](../../../wiki/git-workflow.md) to complete this task
 1. Create a `GitHub` issue titled:
 
    ```text
-   [Task] Build the Data Pipeline
+   [Task] Basic Agent Loop
    ```
 
-### 1.3. Part A: Explore the API
+### 1.3. Plan the implementation
 
-<!-- no toc -->
-- [1.3.1. Fetch the item catalog](#131-fetch-the-item-catalog)
-- [1.3.2. Fetch check logs](#132-fetch-check-logs)
-- [1.3.3. Test incremental sync](#133-test-incremental-sync)
+Before writing any code, plan the implementation with your coding agent.
 
-Before writing code, let's explore the `Autochecker` API.
+1. [Start your coding agent](../../../wiki/coding-agents.md#choose-and-use-a-coding-agent) in the terminal inside the project directory.
 
-The API has HTTP Basic Auth, we'll use `curl` to send requests.
+2. Ask it to create a plan:
 
-#### 1.3.1. Fetch the item catalog
+   > "I need to build a CLI agent in Python. It should:
+   > - Accept a JSON argument with a `question` field from the command line
+   > - Send the question to an LLM API (OpenAI-compatible chat completions)
+   > - Include a system prompt with knowledge about course topics
+   > - Output a single JSON line to stdout with `answer` and `tool_calls` fields
+   > - Send all debug/progress output to stderr only
+   >
+   > Give me a numbered plan. Don't write code yet."
 
-1. To fetch the lab/task catalog,
+3. Review the plan. It should cover:
+   - Parsing the CLI argument (JSON with `question` field)
+   - Making an HTTP request to the LLM API
+   - Handling the response
+   - Formatting the output as JSON to stdout
 
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
+> [!IMPORTANT]
+> Planning first helps you understand the architecture before writing code.
+> A good plan prevents wasted iterations on wrong approaches.
 
-   ```terminal
-   curl \
-     -u <your-email>@innopolis.university:<github-username><telegram-alias> \
-     "https://auche.namaz.live/api/items"
-   ```
+### 1.4. Choose an LLM provider
 
-   Replace `<your-email>` and `<github-username><telegram-alias>` with the credentials you entered in `Autochecker` bot.
+Your agent needs access to an LLM that supports the OpenAI-compatible chat completions API.
 
-   You should see a `JSON` array of labs and tasks from this course:
+You are free to use any provider. One option is [OpenRouter](https://openrouter.ai), which offers free models — no credit card required.
 
-   ```json
-   [
-     {"lab": "lab-01", "task": null, "title": "Lab 01 – ...", "type": "lab"},
-     {"lab": "lab-01", "task": "setup", "title": "Repository Setup", "type": "task"},
-     ...
-   ]
-   ```
-
-> [!NOTE]
-> If your terminal shows JSON in one long line, you can format the output using an [online JSON viewer](https://jsonformatter.org/).
-
-#### 1.3.2. Fetch check logs
-
-1. To fetch the first 5 check logs,
-
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
-
-   ```terminal
-   curl \
-     -u <your-email>@innopolis.university:<github-username><telegram-alias> \
-     "https://auche.namaz.live/api/logs?limit=5"
-   ```
-
-   You should see a `JSON` object with a `logs` array:
-
-   ```json
-   {
-     "logs": [
-       {
-         "id": 1,
-         "student_id": "a1b2c3d4",
-         "group": "B23-CS-01",
-         "lab": "lab-01",
-         "task": "setup",
-         "score": 100.0,
-         "passed": 4,
-         "failed": 0,
-         "total": 4,
-         "checks": [...],
-         "submitted_at": "2026-02-01T14:30:00Z"
-       }
-     ],
-     "count": 5,
-     "has_more": true
-   }
-   ```
-
-> [!NOTE]
->
-> - `student_id` is an anonymized identifier (not a real student ID).
-> - `has_more: true` means there are more records — you need to paginate.
-> - `score` is a percentage (0.0–100.0).
-> - `passed`, `failed`, and `total` are the number of individual checks.
-
-#### 1.3.3. Test incremental sync
-
-1. To fetch only recent logs,
-
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
-
-   ```terminal
-   curl \
-     -u <your-email>@innopolis.university:<github-username><telegram-alias> \
-     "https://auche.namaz.live/api/logs?since=2026-03-01T00:00:00Z&limit=5"
-   ```
-
-   You should see only logs submitted after March 1st 2026.
-
-> [!NOTE]
-> The `since` parameter enables incremental sync — you can fetch new data each time.
-> Your pipeline will use the most recent `submitted_at` from the database as the `since` value.
-
-### 1.4. Part B: Build the pipeline
-
-<!-- no toc -->
-- [1.4.1. Read the code stubs](#141-read-the-code-stubs)
-- [1.4.2. Implement the pipeline (AI)](#142-implement-the-pipeline-ai)
-- [1.4.3. Run and test locally](#143-run-and-test-locally)
-- [1.4.4. Verify the data locally](#144-verify-the-data-locally)
-- [1.4.5. Test idempotency locally](#145-test-idempotency-locally)
-- [1.4.6. Commit and push your work](#146-commit-and-push-your-work)
-- [1.4.7. Update and test on the VM](#147-update-and-test-on-the-vm)
-
-#### 1.4.1. Read the code stubs
-
-The code stubs in `backend/app/etl.py` contain detailed TODOs.
-
-1. Open the file:
-   [`backend/app/etl.py`](../../../backend/app/etl.py).
-
-   This file contains five functions with detailed TODO comments:
-
-   | Function        | Role                                                  |
-   | --------------- | ----------------------------------------------------- |
-   | `fetch_items()` | Fetch the lab/task catalog from the API               |
-   | `fetch_logs()`  | Fetch check logs with pagination                      |
-   | `load_items()`  | Insert items into the database                        |
-   | `load_logs()`   | Insert logs (with learner creation) into the database |
-   | `sync()`        | Orchestrate the full pipeline                         |
-
-2. Open the file:
-   [`backend/app/routers/pipeline.py`](../../../backend/app/routers/pipeline.py).
-
-   This file provides the `POST /pipeline/sync` endpoint that calls `sync()`.
-
-3. Read the TODO comments in `etl.py` carefully. They specify:
-
-   - Which API endpoints to call and how to authenticate.
-   - How to handle pagination (`has_more` flag).
-   - How to match API data to database models.
-   - How to ensure idempotent upserts (skip records that already exist).
-
-#### 1.4.2. Implement the pipeline (AI)
-
-1. [Start the `Qwen Code` coding agent](../../../wiki/qwen.md#open-a-chat-with-qwen-code) in the terminal inside the project directory.
-2. Give it a prompt that asks for planning, implementation, and explanation:
-
-   > "Read the TODO comments in `backend/app/etl.py` and implement all five functions one by one. Use the existing models in `backend/app/models/` and the settings in `backend/app/settings.py`. The API uses HTTP Basic Auth. First give me a short numbered plan, then implement a function, deploy locally, then test, report to me what exactly you've done and explain each function step by step as if teaching a junior engineer. Then confirm with me and proceed to the next function."
-
-3. Wait for the agent to generate the implementation.
-
-4. Review the generated code. Make sure it:
-
-   - Uses `httpx.AsyncClient` with HTTP Basic Auth for API calls.
-   - Handles pagination in `fetch_logs()` (loops while `has_more` is True).
-   - In `load_items()`, maps labs by their short ID (e.g. `"lab-01"`), not by title, so tasks can find their parent.
-   - Passes the raw items catalog to `load_logs()` so it can map log fields (e.g. `"lab-01"`, `"setup"`) to item titles in the DB.
-   - Creates learners by `external_id` in `load_logs()` (find-or-create pattern).
-   - Uses `external_id` on `InteractionLog` for idempotent upserts (skip if exists).
-   - Returns `{"new_records": N, "total_records": M}` from `sync()`.
+1. Get an API key from your chosen provider.
+2. Find a model that works for you. If using OpenRouter, look for models tagged as `free` that support tool calling (you'll need this in Task 2).
+3. Note the API base URL and model name — you'll need them in your agent code.
 
 > [!TIP]
-> To get educational answers from a coding agent, ask for these explicitly:
+> You can test that your API key works with a simple curl:
 >
-> - "Plan first, then code."
-> - "Explain each function step by step."
-> - "Call out assumptions and edge cases."
-> - "After coding, summarize why this implementation is correct."
+> ```terminal
+> curl <api-base-url>/chat/completions \
+>   -H "Authorization: Bearer <your-api-key>" \
+>   -H "Content-Type: application/json" \
+>   -d '{"model": "<model-name>", "messages": [{"role": "user", "content": "Say hello"}]}'
+> ```
 
 > [!NOTE]
-> The implementation must pass `POST /pipeline/sync` — proceed to [step 1.4.3](#143-run-and-test-locally) to verify.
+> The agent code must read the API key from an environment variable (e.g., `OPENROUTER_API_KEY`).
+> Never hardcode API keys in source code.
 
-#### 1.4.3. Run and test locally
+### 1.5. Build the agent
 
-1. To deploy your changes locally,
+Now implement the agent. You can use your coding agent to help, but make sure you understand every line.
 
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
+1. Create `agent.py` in the project root.
+
+2. The CLI interface must be:
+
+   **Input** — a JSON string as the first command-line argument:
+
+   ```bash
+   python agent.py '{"question": "What does REST stand for?"}'
+   ```
+
+   **Output** — a single JSON line to stdout:
+
+   ```json
+   {"answer": "Representational State Transfer.", "tool_calls": []}
+   ```
+
+3. Requirements:
+
+   | Requirement | Details |
+   |---|---|
+   | Input format | JSON string with `question` field as CLI argument |
+   | Output format | Single JSON line to stdout with `answer` (string) and `tool_calls` (array) fields |
+   | Debug output | All logs, progress, errors go to **stderr only** — stdout must contain only the JSON result |
+   | API key | Read from an environment variable, never hardcode |
+   | System prompt | Include knowledge about course topics so the LLM can answer without tools |
+   | Timeout | The agent must respond within 60 seconds |
+   | Exit code | 0 on success |
+
+4. Your system prompt should cover these course topics:
+
+   - **Git**: branches, commits, merging, PRs, issues, workflows
+   - **REST**: HTTP methods, status codes, resource naming, authentication vs authorization
+   - **Docker**: containers, images, Dockerfile, Docker Compose, volumes
+   - **SQL**: SELECT, JOIN, GROUP BY, aggregation functions, CASE WHEN
+   - **Testing**: unit tests, e2e tests, test fixtures, pytest
+   - **ETL**: extract-transform-load pipelines, pagination, idempotent upserts
+   - **Agents**: agentic loops, tool calling, LLM APIs
+
+> [!TIP]
+> If using a coding agent to help you build `agent.py`, a good prompt:
+>
+> "Now implement the agent following the plan. Create `agent.py` in the project root.
+> Use the `requests` or `httpx` library to call the LLM API. Read the API key from
+> an environment variable. Include a system prompt with course knowledge. Output only
+> valid JSON to stdout. Explain each part of the code."
+
+### 1.6. Test locally
+
+1. Set your API key as an environment variable:
 
    ```terminal
-   docker compose --env-file .env.docker.secret up --build -d
+   export OPENROUTER_API_KEY=<your-api-key>
    ```
 
-2. Open [`Swagger UI`](../../../wiki/swagger.md#open-swagger-ui) at `http://localhost:<caddy-port>/docs`.
+   Replace with the actual variable name and key for your chosen provider.
 
-   Replace `<caddy-port>` with the value of [`CADDY_HOST_PORT`](../../../wiki/dotenv-docker-secret.md#caddy_host_port) in [`.env.docker.secret`](../../../wiki/dotenv-docker-secret.md#what-is-envdockersecret) (default: `42002`).
+2. Test with a simple question:
 
-3. Authorize with your [`API_KEY`](../../../wiki/dotenv-docker-secret.md#api_key).
+   ```terminal
+   python agent.py '{"question": "What does REST stand for?"}'
+   ```
 
-4. Trigger the pipeline. Complete the following steps:
-   1. Expand `POST /pipeline/sync`.
-   2. Click `Try it out`.
-   3. Click `Execute`.
-
-   You should see a `200` response with a `JSON` body:
+   You should see a single JSON line:
 
    ```json
-   {
-     "new_records": 150,
-     "total_records": 150
-   }
+   {"answer": "Representational State Transfer.", "tool_calls": []}
    ```
 
-   The exact numbers depend on how many check results exist in the `Autochecker`.
+3. Test with more questions to verify the system prompt covers course topics:
 
-   <details><summary><b>Troubleshooting (click to open)</b></summary>
-
-   <h4>500 Internal Server Error</h4>
-  
-   If you get a `500` error, the pipeline code has a bug. Use this debug loop:
-
-   1. To check the container logs for the error,
-
-      [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
-  
-      ```terminal
-      docker compose --env-file .env.docker.secret logs app --tail 50
-      ```
-
-   2. Copy the error traceback and give it to your coding agent.
-   3. Apply the fix, rebuild (`docker compose --env-file .env.docker.secret up --build -d`), and try again.
-   4. Repeat this cycle 2–3 times. AI agents often make mistakes with field names, imports, or database constraints on the first try. Each iteration gets you closer.
-
-   <h4>401 Unauthorized from the <code>Autochecker</code> API</h4>
-
-   Check that [`AUTOCHECKER_EMAIL`](../../../wiki/dotenv-docker-secret.md#autochecker_email) and [`AUTOCHECKER_PASSWORD`](../../../wiki/dotenv-docker-secret.md#autochecker_password) are set correctly in [`.env.docker.secret`](../../../wiki/dotenv-docker-secret.md#what-is-envdockersecret). The password is `<github-username><telegram-alias>` (no spaces, no `@`).
-
-   <h4>Connection refused to the <code>Autochecker</code> API</h4>
-
-   Verify that [`AUTOCHECKER_API_URL`](../../../wiki/dotenv-docker-secret.md#autochecker_api_url) is set to `https://auche.namaz.live` in [`.env.docker.secret`](../../../wiki/dotenv-docker-secret.md#what-is-envdockersecret).
-
-   </details>
-
-#### 1.4.4. Verify the data locally
-
-1. In local [`Swagger UI`](../../../wiki/swagger.md#open-swagger-ui), run `GET /items/` as in [step 1.4.3](#143-run-and-test-locally).
-
-   You should see a list of lab and task items created by the pipeline.
-
-2. Run `GET /learners/`.
-
-   You should see a list of learners with anonymized `external_id` values and student groups.
-
-3. Run `GET /interactions/`.
-
-   You should see interaction records with `score`, `checks_passed`, and `checks_total` fields.
-
-4. (Optional) Open [`pgAdmin`](../../../wiki/pgadmin.md#what-is-pgadmin) and inspect the tables directly.
-
-#### 1.4.5. Test idempotency locally
-
-1. In local [`Swagger UI`](../../../wiki/swagger.md#open-swagger-ui), run `POST /pipeline/sync` again.
-
-   You should see:
-
-   ```json
-   {
-     "new_records": 0,
-     "total_records": 150
-   }
+   ```terminal
+   python agent.py '{"question": "What HTTP method is used to delete a resource?"}'
+   python agent.py '{"question": "What does Docker Compose do?"}'
+   python agent.py '{"question": "What does ETL stand for?"}'
    ```
 
-   `new_records: 0` confirms that the pipeline does not create duplicate records.
+4. Verify the output is valid JSON:
+
+   ```terminal
+   python agent.py '{"question": "What does REST stand for?"}' | python -m json.tool
+   ```
+
+   If this fails, your agent is printing something other than JSON to stdout (debug output should go to stderr).
+
+<details><summary><b>Troubleshooting (click to open)</b></summary>
+
+<h4>Output is not valid JSON</h4>
+
+Make sure all `print()` statements for debug info use `file=sys.stderr`. Only the final JSON result should go to stdout.
+
+<h4>API key error (401/403)</h4>
+
+Check that the environment variable is set correctly: `echo $OPENROUTER_API_KEY`
+
+<h4>Model not found (404)</h4>
+
+Verify the model name matches exactly what your provider expects.
+
+<h4>Timeout or no response</h4>
+
+Check your internet connection. Try the curl test from step 1.4 first.
+
+</details>
+
+### 1.7. Document your solution
+
+Create a brief architecture document that describes your agent's design.
+
+1. Create `AGENT.md` in the project root with:
+
+   - **Architecture**: how the agent works (input → LLM call → output)
+   - **LLM provider**: which provider and model you chose, and why
+   - **System prompt strategy**: how you structured the system prompt to cover course topics
+   - **How to run**: the command and required environment variables
+
+> [!TIP]
+> You can ask your coding agent:
+>
+> "Read `agent.py` and create `AGENT.md` documenting the architecture, LLM provider choice, system prompt strategy, and how to run the agent."
+
+### 1.8. Add regression tests
+
+Write tests that verify your agent produces correct output for a few known questions.
+
+1. Create a test file (e.g., `tests/test_agent.py` or `backend/tests/test_agent.py`).
+
+2. The tests should:
+   - Run `agent.py` as a subprocess with a test question
+   - Parse the JSON output
+   - Verify that `answer` and `tool_calls` fields are present
+   - Verify that the answer contains expected keywords
+
+   Example test structure:
+
+   ```python
+   import subprocess, json
+
+   def test_rest_question():
+       result = subprocess.run(
+           ["python", "agent.py", '{"question": "What does REST stand for?"}'],
+           capture_output=True, text=True, timeout=60
+       )
+       assert result.returncode == 0
+       output = json.loads(result.stdout)
+       assert "answer" in output
+       assert "tool_calls" in output
+       assert "representational" in output["answer"].lower()
+   ```
+
+3. Run your tests to make sure they pass.
 
 > [!NOTE]
-> Idempotent upserts are important for production pipelines.
-> If the pipeline is interrupted, you can safely re-run it without creating duplicates.
+> These tests call a real LLM API, so they will use your API key and take a few seconds each.
+> Keep the test set small (3–5 questions) to avoid excessive API calls.
 
-#### 1.4.6. Commit and push your work
+### 1.9. Commit and push your work
 
 1. [Commit](../../../wiki/git-workflow.md#commit-changes) your changes.
 
    Use this commit message:
 
    ```text
-   feat: implement ETL pipeline for autochecker data
+   feat: implement basic agent loop with LLM integration
    ```
 
-2. To push your task branch,
-
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
+2. [Push](../../../wiki/git-workflow.md#push-commits) your task branch:
 
    ```terminal
    git push -u origin <task-branch>
@@ -375,57 +301,54 @@ The code stubs in `backend/app/etl.py` contain detailed TODOs.
 
    Replace [`<task-branch>`](../../../wiki/git-workflow.md#task-branch).
 
-#### 1.4.7. Update and test on the VM
+### 1.10. Deploy and test on the VM
 
-1. To update to your task branch on the VM,
-
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
+1. On your VM, pull the changes:
 
    ```terminal
-   cd se-toolkit-lab-5
-   git fetch origin
-   git checkout <task-branch>
-   git pull origin <task-branch>
+   cd ~/se-toolkit-lab-6
+   git fetch origin && git checkout <task-branch> && git pull
    ```
 
    Replace [`<task-branch>`](../../../wiki/git-workflow.md#task-branch).
 
-2. To rebuild and start the services,
-
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
+2. Install Python dependencies on the VM (if not already done):
 
    ```terminal
-   docker compose --env-file .env.docker.secret up --build -d
+   uv sync
    ```
 
-3. Open [`Swagger UI`](../../../wiki/swagger.md#open-swagger-ui) at `http://<your-vm-ip-address>:<caddy-port>/docs`.
+3. Set the API key on the VM:
 
-   Replace:
-
-   - `<your-vm-ip-address>` with your VM's IP address.
-   - `<caddy-port>` with the value of [`CADDY_HOST_PORT`](../../../wiki/dotenv-docker-secret.md#caddy_host_port) in [`.env.docker.secret`](../../../wiki/dotenv-docker-secret.md#what-is-envdockersecret) (default: `42002`).
-
-4. Authorize with your [`API_KEY`](../../../wiki/dotenv-docker-secret.md#api_key).
-
-5. Run `POST /pipeline/sync` once.
-
-   You should see a `200` response with a `JSON` body:
-
-   ```json
-   {
-     "new_records": 150,
-     "total_records": 150
-   }
+   ```terminal
+   export OPENROUTER_API_KEY=<your-api-key>
    ```
 
-   The exact numbers depend on how many check results exist in the `Autochecker`.
+   > [!TIP]
+   > To make the variable persist across SSH sessions, add it to `~/.bashrc`:
+   >
+   > ```terminal
+   > echo 'export OPENROUTER_API_KEY=<your-api-key>' >> ~/.bashrc
+   > ```
 
-### 1.5. Finish the task
+4. Run the same test questions on the VM:
+
+   ```terminal
+   python agent.py '{"question": "What does REST stand for?"}'
+   ```
+
+5. Verify the output is valid JSON and the answers are correct.
+
+> [!IMPORTANT]
+> The autochecker will SSH into your VM and run `python agent.py '{"question": "..."}'`.
+> Make sure the agent works on the VM exactly as it does locally.
+
+### 1.11. Finish the task
 
 1. [Create a PR](../../../wiki/git-workflow.md#create-a-pr-to-the-main-branch-in-your-fork) with your changes.
 2. [Get a PR review](../../../wiki/git-workflow.md#get-a-pr-review) and complete the subsequent steps in the `Git workflow`.
 
-### 1.6. Check the task using the autochecker
+### 1.12. Check the task using the autochecker
 
 [Check the task using the autochecker `Telegram` bot](../../../wiki/autochecker.md#check-the-task-using-the-autochecker-bot).
 
@@ -434,10 +357,12 @@ The code stubs in `backend/app/etl.py` contain detailed TODOs.
 ## 2. Acceptance criteria
 
 - [ ] Issue has the correct title.
-- [ ] `POST /pipeline/sync` returns `200` with a `JSON` body containing `new_records` and `total_records`.
-- [ ] `GET /items/` returns items created by the pipeline (labs and tasks).
-- [ ] `GET /learners/` returns learners created by the pipeline.
-- [ ] `GET /interactions/` returns interactions with scores.
-- [ ] Running `POST /pipeline/sync` a second time returns `new_records: 0` (idempotency).
-- [ ] PR is approved.
-- [ ] PR is merged.
+- [ ] `agent.py` exists in the project root.
+- [ ] `python agent.py '{"question": "..."}'` outputs valid JSON to stdout with `answer` and `tool_calls` fields.
+- [ ] The agent answers course topic questions correctly (Git, REST, Docker, SQL, testing, ETL, agents).
+- [ ] The API key is read from an environment variable (not hardcoded).
+- [ ] Debug/progress output goes to stderr, not stdout.
+- [ ] `AGENT.md` documents the solution architecture.
+- [ ] Regression tests exist and pass.
+- [ ] The agent works on the VM (accessible via SSH).
+- [ ] PR is approved and merged.

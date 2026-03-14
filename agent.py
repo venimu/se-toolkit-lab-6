@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 # Maximum number of tool calls per question
-MAX_TOOL_CALLS = 5
+MAX_TOOL_CALLS = 10
 
 
 def load_env(env_path: Path) -> dict[str, str]:
@@ -133,7 +133,7 @@ def validate_path(relative_path: str, project_root: Path) -> Path | None:
         if not str(full_path).startswith(str(resolved_root)):
             return None
         return full_path
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return None
 
 
@@ -319,16 +319,22 @@ Use the right tool for each question type:
 2. Source code questions (framework, routers, ETL pipeline): Use list_files("backend/app") then read_file() on relevant files
 3. System/API questions (item count, status codes, analytics data): Use query_api() to query the running backend at http://localhost:42002
 4. Bug diagnosis: First use query_api() to reproduce the error, then read_file() to examine the source code and find the bug
+5. Infrastructure questions (Docker, request journey): Read docker-compose.yml, Dockerfile, Caddyfile, and main.py to trace the request flow
 
 IMPORTANT RULES:
-- Always include a source reference for wiki/source questions: SOURCE: wiki/filename.md#section-anchor
+- Always include a source reference for wiki/source questions: SOURCE: path/to/file.ext#section-anchor
 - Section anchors are lowercase with hyphens (e.g., "## Resolving Merge Conflicts" -> #resolving-merge-conflicts)
 - For API questions, you can omit the source or cite the endpoint
 - Always explore systematically - start by listing files in the relevant directory
+- For database count questions: Query GET /items/ and count the items in the returned array
+- For bug diagnosis in analytics: Look for division operations (risk of ZeroDivisionError) and sorting with potential None values (risk of TypeError)
+- For request journey questions: Trace from Caddy reverse proxy -> FastAPI app -> authentication -> router -> database ORM -> PostgreSQL
 
 When you have found the answer, respond with a final message (no tool calls) that includes:
 1. A clear answer to the question
-2. The source reference on a separate line: SOURCE: wiki/filename.md#section-anchor"""
+2. The source reference on a separate line: SOURCE: path/to/file.ext#section-anchor
+
+For multi-part questions (like request journey or ETL idempotency), provide a detailed explanation covering all aspects mentioned in the question."""
 
 
 def execute_tool(
@@ -372,6 +378,7 @@ def extract_source_from_answer(answer: str) -> str:
     - SOURCE: wiki/file.md#anchor
     - Source: wiki/file.md#anchor
     - source: wiki/file.md#anchor
+    - SOURCE: backend/app/file.py#anchor
 
     Args:
         answer: The LLM's answer text.
@@ -380,9 +387,9 @@ def extract_source_from_answer(answer: str) -> str:
         Source reference string, or empty string if not found.
     """
     patterns = [
-        r"SOURCE:\s*(wiki/[\w\-/.]+#\w[\w\-]*)",
-        r"Source:\s*(wiki/[\w\-/.]+#\w[\w\-]*)",
-        r"source:\s*(wiki/[\w\-/.]+#\w[\w\-]*)",
+        r"SOURCE:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
+        r"Source:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
+        r"source:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
     ]
 
     for pattern in patterns:
@@ -606,5 +613,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

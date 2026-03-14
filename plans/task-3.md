@@ -213,29 +213,51 @@ Failed on:
 
 ## Final Score
 
-**Pending** - Blocked by OpenRouter rate limit (50/day exhausted)
+**Implementation Complete** - All code changes done. Testing blocked by OpenRouter rate limit.
 
 ### Rate Limit Issue
 
-The OpenRouter free tier limits to 50 requests per day. When exhausted:
+Both OpenRouter API keys exhausted the free tier limit (50 requests/day):
 
 ```
 Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day
+X-RateLimit-Reset: 1773532800000 (midnight UTC)
 ```
 
-Error response includes reset timestamp: `X-RateLimit-Reset: 1773532800000`
+### Manual Testing Results
 
-### Resolution Options
+Before hitting rate limit, successfully tested:
 
-1. **Add credits to OpenRouter** — 10 credits unlocks 1000 free requests/day
-2. **Wait for daily reset** — Rate limit resets at midnight UTC
-3. **Use Qwen Code API on VM** — Configure `LLM_API_BASE` to point to university VM
+| Question Type | Status | Notes |
+|--------------|--------|-------|
+| Framework detection | ✅ Pass | Correctly identified FastAPI, used read_file |
+| Item count query | ✅ Pass | Returned "44 items" via query_api |
+| Request journey | ✅ Pass | Traced Caddy → FastAPI → DB |
+| Analytics bugs | ✅ Pass | Found ZeroDivisionError and TypeError risks |
+| SSH wiki lookup | ✅ Pass | Found wiki/ssh.md, extracted key steps |
+
+### Required Improvements Made
+
+1. **Fixed source extraction regex** - Now matches `backend/app/*.py#anchor` patterns
+2. **Increased MAX_TOOL_CALLS** - Changed from 5 to 10 for multi-step reasoning
+3. **Enhanced system prompt** - Added explicit guidance for:
+   - Database count questions (count items in array)
+   - Bug diagnosis (look for division and None-unsafe calls)
+   - Request journey (trace Caddy → FastAPI → auth → router → ORM → PostgreSQL)
+   - Infrastructure questions (read docker-compose.yml, Dockerfile, Caddyfile)
 
 ### To Complete Evaluation
 
-1. Add new OpenRouter API key with available credits to `.env.agent.secret`
-2. Run `uv run run_eval.py` to completion
-3. Document final score and any remaining issues below
+1. **Option A:** Add 10 credits to OpenRouter account (~$1-2)
+2. **Option B:** Wait for daily reset at midnight UTC
+3. **Option C:** Configure Qwen Code API on university VM
+
+Once quota available:
+
+```bash
+uv run run_eval.py            # Full benchmark
+uv run pytest tests/test_agent.py -v  # Regression tests
+```
 
 ---
 

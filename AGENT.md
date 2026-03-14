@@ -338,6 +338,80 @@ The agent was tested against the 10-question local benchmark:
 
 Key insight: The agent needs to balance thoroughness (enough tool calls to find answers) with speed (avoiding 60s timeouts).
 
+### Task 3: query_api Implementation
+
+**Architecture Decision:** The `query_api` tool was designed to be generic — it accepts any HTTP method and path, making it flexible for future API endpoints without code changes.
+
+**Authentication Flow:**
+
+1. Read `LMS_API_KEY` from `.env.docker.secret` (or environment variable)
+2. Include `Authorization: Bearer {LMS_API_KEY}` header in all requests
+3. Backend validates token using `get_current_user()` dependency
+4. Return full response including status codes (e.g., 401 for missing auth)
+
+**Key Implementation Details:**
+
+- Base URL from `AGENT_API_BASE_URL` env var (default: `http://localhost:42002`)
+- 30-second timeout per API call (separate from 60s LLM timeout)
+- Handles all HTTP methods: GET, POST, PUT, DELETE, PATCH
+- Returns JSON string with `status_code` and `body` for LLM to parse
+
+**Tool Selection Strategy:**
+
+The system prompt explicitly guides the LLM:
+
+```
+3. System/API questions (item count, status codes, analytics data): Use query_api()
+4. Bug diagnosis: First use query_api() to reproduce the error, then read_file()
+```
+
+This two-step approach is essential for questions 6-7 where the agent must:
+
+1. Call `query_api` to trigger the error (e.g., ZeroDivisionError, TypeError)
+2. Read the source code to identify the root cause
+
+**Rate Limiting Challenge:**
+
+OpenRouter's free tier (50 requests/day) was exhausted during development. The error response includes helpful metadata:
+
+```json
+{
+  "error": {
+    "message": "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day",
+    "code": 429,
+    "metadata": {
+      "headers": {
+        "X-RateLimit-Limit": "50",
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": "1773532800000"
+      }
+    }
+  }
+}
+```
+
+**Resolution:** Add credits to OpenRouter account or use the Qwen Code API on the university VM for unlimited development testing.
+
+### Final Architecture Summary
+
+The Task 3 agent has three complementary tools:
+
+| Tool | Purpose | Question Types |
+|------|---------|----------------|
+| `list_files` | Discover file structure | "What files exist...", "List all routers" |
+| `read_file` | Read file contents | Wiki questions, source code analysis |
+| `query_api` | Query running backend | Data queries, status codes, bug reproduction |
+
+The agentic loop orchestrates these tools:
+
+1. LLM receives question + tool schemas
+2. LLM decides which tool(s) to call
+3. Agent executes tools, appends results to conversation
+4. LLM processes results, either calls more tools or provides final answer
+5. Agent extracts source reference, outputs JSON
+
+This architecture enables multi-step reasoning: the agent can chain tools (e.g., `query_api` → `read_file`) to diagnose bugs by first reproducing the error, then examining the source code.
+
 ## Future Extensions
 
 - Add `search_code` tool for grep-like code search

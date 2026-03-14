@@ -215,8 +215,39 @@ Failed on:
 
 **Pending** - Blocked by OpenRouter rate limit (50/day exhausted)
 
-To complete evaluation:
+### Rate Limit Issue
 
-1. Wait for rate limit reset (next day) OR add credits
+The OpenRouter free tier limits to 50 requests per day. When exhausted:
+
+```
+Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day
+```
+
+Error response includes reset timestamp: `X-RateLimit-Reset: 1773532800000`
+
+### Resolution Options
+
+1. **Add credits to OpenRouter** — 10 credits unlocks 1000 free requests/day
+2. **Wait for daily reset** — Rate limit resets at midnight UTC
+3. **Use Qwen Code API on VM** — Configure `LLM_API_BASE` to point to university VM
+
+### To Complete Evaluation
+
+1. Add new OpenRouter API key with available credits to `.env.agent.secret`
 2. Run `uv run run_eval.py` to completion
-3. Document final score and any remaining issues
+3. Document final score and any remaining issues below
+
+---
+
+## Implementation Status (Complete)
+
+All code implementation is complete:
+
+- ✅ `query_api` tool implemented with Bearer token authentication
+- ✅ Tool schema registered in `get_tool_schemas()`
+- ✅ `get_api_config()` loads `LMS_API_KEY` and `AGENT_API_BASE_URL`
+- ✅ System prompt updated with tool selection guidance
+- ✅ Agent reads all config from environment variables
+- ✅ Tests exist for `query_api` tool usage
+
+**Only blocker:** OpenRouter rate limit prevents running full benchmark.

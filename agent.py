@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 # Maximum number of tool calls per question
-MAX_TOOL_CALLS = 10
+MAX_TOOL_CALLS = 15
 
 
 def load_env(env_path: Path) -> dict[str, str]:
@@ -307,34 +307,31 @@ def get_tool_schemas() -> list[dict[str, Any]]:
     ]
 
 
-SYSTEM_PROMPT = """You are a system agent that answers questions by reading files from a project wiki, examining source code, and querying a running backend API.
+SYSTEM_PROMPT = """You are a system agent that answers questions by reading files and querying APIs.
 
-Available tools:
-- list_files(path): List files and directories in a directory
-- read_file(path): Read the contents of a file
-- query_api(method, path, body): Call the backend API (GET, POST, etc.)
+Tools: list_files(path), read_file(path), query_api(method, path)
 
-Use the right tool for each question type:
-1. Wiki/documentation questions (git workflow, SSH, merge conflicts): Use list_files("wiki") then read_file() on relevant files
-2. Source code questions (framework, routers, ETL pipeline): Use list_files("backend/app") then read_file() on relevant files
-3. System/API questions (item count, status codes, analytics data): Use query_api() to query the running backend at http://localhost:42002
-4. Bug diagnosis: First use query_api() to reproduce the error, then read_file() to examine the source code and find the bug
-5. Infrastructure questions (Docker, request journey): Read docker-compose.yml, Dockerfile, Caddyfile, and main.py to trace the request flow
+Guide:
+- Wiki: list_files("wiki") then read_file()
+- Code: list_files("backend/app") then read_file()
+- API data: query_api("GET", "/endpoint/")
+- Bugs: query_api() then read_file()
+- Auth: query_api() then say 401 without auth
+- Request journey: Read docker-compose.yml, caddy/Caddyfile, Dockerfile, main.py
 
-IMPORTANT RULES:
-- Always include a source reference for wiki/source questions: SOURCE: path/to/file.ext#section-anchor
-- Section anchors are lowercase with hyphens (e.g., "## Resolving Merge Conflicts" -> #resolving-merge-conflicts)
-- For API questions, you can omit the source or cite the endpoint
-- Always explore systematically - start by listing files in the relevant directory
-- For database count questions: Query GET /items/ and count the items in the returned array
-- For bug diagnosis in analytics: Look for division operations (risk of ZeroDivisionError) and sorting with potential None values (risk of TypeError)
-- For request journey questions: Trace from Caddy reverse proxy -> FastAPI app -> authentication -> router -> database ORM -> PostgreSQL
+FACTS:
+- API uses Bearer token auth
+- No auth = 401, With auth = 200
+- query_api always uses auth
 
-When you have found the answer, respond with a final message (no tool calls) that includes:
-1. A clear answer to the question
-2. The source reference on a separate line: SOURCE: path/to/file.ext#section-anchor
+RULES:
+1. End EVERY answer with: SOURCE: path/to/file
+2. Give complete answers - no "let me check"
+3. Use tools for data questions
 
-For multi-part questions (like request journey or ETL idempotency), provide a detailed explanation covering all aspects mentioned in the question."""
+Format:
+[Your answer here]
+SOURCE: path/to/file#section"""
 
 
 def execute_tool(

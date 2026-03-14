@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 # Maximum number of tool calls per question
-MAX_TOOL_CALLS = 10
+MAX_TOOL_CALLS = 5
 
 
 def load_env(env_path: Path) -> dict[str, str]:
@@ -77,6 +77,44 @@ def get_llm_config() -> tuple[str, str, str]:
         sys.exit(1)
 
     return api_key, api_base, model
+
+
+def get_api_config() -> tuple[str, str]:
+    """Load backend API configuration from environment and .env.docker.secret.
+
+    Returns:
+        Tuple of (lms_api_key, agent_api_base_url)
+
+    Raises:
+        SystemExit: If LMS_API_KEY is missing.
+    """
+    project_root = Path(__file__).parent
+
+    # First check environment variables (for autochecker)
+    lms_api_key = os.environ.get("LMS_API_KEY", "").strip()
+    agent_api_base_url = os.environ.get("AGENT_API_BASE_URL", "").strip()
+
+    # If not in environment, try to load from .env.docker.secret
+    if not lms_api_key:
+        env_path = project_root / ".env.docker.secret"
+        env_vars = load_env(env_path)
+        lms_api_key = env_vars.get("LMS_API_KEY", "").strip()
+        if not agent_api_base_url:
+            caddy_port = env_vars.get("CADDY_HOST_PORT", "42002")
+            agent_api_base_url = f"http://localhost:{caddy_port}"
+
+    # Default to localhost:42002 if still not set
+    if not agent_api_base_url:
+        agent_api_base_url = "http://localhost:42002"
+
+    if not lms_api_key:
+        print(
+            "Error: LMS_API_KEY not found in environment or .env.docker.secret",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return lms_api_key, agent_api_base_url
 
 
 def validate_path(relative_path: str, project_root: Path) -> Path | None:
@@ -152,6 +190,57 @@ def list_files(path: str, project_root: Path) -> str:
         return f"Error: Could not list directory - {e}"
 
 
+def query_api(
+    method: str, path: str, body: str | None, api_base_url: str, api_key: str
+) -> str:
+    """Call the backend API and return the response.
+
+    Args:
+        method: HTTP method (GET, POST, etc.).
+        path: API path (e.g., '/items/').
+        body: Optional JSON request body for POST/PUT requests.
+        api_base_url: Base URL of the backend API.
+        api_key: API key for authentication.
+
+    Returns:
+        JSON string with status_code and body, or error message.
+    """
+    url = f"{api_base_url.rstrip('/')}{path}"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                response = client.post(url, headers=headers, content=body or "{}")
+            elif method.upper() == "PUT":
+                response = client.put(url, headers=headers, content=body or "{}")
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            elif method.upper() == "PATCH":
+                response = client.patch(url, headers=headers, content=body or "{}")
+            else:
+                return f"Error: Unsupported HTTP method - {method}"
+
+            result = {
+                "status_code": response.status_code,
+                "body": response.text,
+            }
+            return json.dumps(result)
+
+    except httpx.TimeoutException:
+        return f"Error: API request timed out - {url}"
+    except httpx.HTTPError as e:
+        return f"Error: HTTP request failed - {e}"
+    except Exception as e:
+        return f"Error: Request failed - {e}"
+
+
 def get_tool_schemas() -> list[dict[str, Any]]:
     """Return the tool schemas for LLM function calling."""
     return [
@@ -159,13 +248,13 @@ def get_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a file from the project repository. Use this to read wiki files to find answers.",
+                "description": "Read the contents of a file from the project repository. Use this to read wiki files or source code to find answers.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Relative path to the file from the project root (e.g., 'wiki/git-workflow.md')",
+                            "description": "Relative path to the file from the project root (e.g., 'wiki/git-workflow.md' or 'backend/app/main.py')",
                         }
                     },
                     "required": ["path"],
@@ -182,45 +271,81 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Relative path to the directory from the project root (e.g., 'wiki')",
+                            "description": "Relative path to the directory from the project root (e.g., 'wiki' or 'backend/app/routers')",
                         }
                     },
                     "required": ["path"],
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_api",
+                "description": "Call the backend API to fetch data or test endpoints. Use this for questions about the running system, database contents, API behavior, or HTTP status codes. The API base URL is http://localhost:42002 (or from AGENT_API_BASE_URL env var).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "method": {
+                            "type": "string",
+                            "description": "HTTP method (GET, POST, PUT, DELETE, PATCH)",
+                            "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "API path (e.g., '/items/', '/analytics/completion-rate')",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Optional JSON request body for POST/PUT/PATCH requests",
+                        },
+                    },
+                    "required": ["method", "path"],
+                },
+            },
+        },
     ]
 
 
-SYSTEM_PROMPT = """You are a documentation agent that answers questions by reading files from a project wiki.
+SYSTEM_PROMPT = """You are a system agent that answers questions by reading files from a project wiki, examining source code, and querying a running backend API.
 
 Available tools:
 - list_files(path): List files and directories in a directory
 - read_file(path): Read the contents of a file
+- query_api(method, path, body): Call the backend API (GET, POST, etc.)
 
-Process:
-1. Use list_files to discover relevant wiki files (start with "wiki" directory)
-2. Use read_file to read specific files and find the answer
-3. Look for section headers in files (lines starting with #, ##, etc.)
-4. Include the source reference in your answer using the format: wiki/filename.md#section-anchor
+Use the right tool for each question type:
+1. Wiki/documentation questions (git workflow, SSH, merge conflicts): Use list_files("wiki") then read_file() on relevant files
+2. Source code questions (framework, routers, ETL pipeline): Use list_files("backend/app") then read_file() on relevant files
+3. System/API questions (item count, status codes, analytics data): Use query_api() to query the running backend at http://localhost:42002
+4. Bug diagnosis: First use query_api() to reproduce the error, then read_file() to examine the source code and find the bug
 
-Section anchors are lowercase with hyphens instead of spaces.
-For example, "## Resolving Merge Conflicts" becomes "#resolving-merge-conflicts"
+IMPORTANT RULES:
+- Always include a source reference for wiki/source questions: SOURCE: wiki/filename.md#section-anchor
+- Section anchors are lowercase with hyphens (e.g., "## Resolving Merge Conflicts" -> #resolving-merge-conflicts)
+- For API questions, you can omit the source or cite the endpoint
+- Always explore systematically - start by listing files in the relevant directory
 
 When you have found the answer, respond with a final message (no tool calls) that includes:
-- A clear answer to the question
-- The source reference at the end: SOURCE: wiki/filename.md#section-anchor
-
-Always explore the wiki systematically - start by listing files in the wiki directory, then read relevant files."""
+1. A clear answer to the question
+2. The source reference on a separate line: SOURCE: wiki/filename.md#section-anchor"""
 
 
-def execute_tool(name: str, args: dict[str, Any], project_root: Path) -> str:
+def execute_tool(
+    name: str,
+    args: dict[str, Any],
+    project_root: Path,
+    api_base_url: str = "",
+    api_key: str = "",
+) -> str:
     """Execute a tool and return its result.
 
     Args:
         name: Tool name.
         args: Tool arguments.
         project_root: Absolute path to project root.
+        api_base_url: Base URL for query_api (optional).
+        api_key: API key for query_api authentication (optional).
 
     Returns:
         Tool result as string.
@@ -231,6 +356,11 @@ def execute_tool(name: str, args: dict[str, Any], project_root: Path) -> str:
     elif name == "list_files":
         path = args.get("path", "")
         return list_files(path, project_root)
+    elif name == "query_api":
+        method = args.get("method", "GET")
+        path = args.get("path", "")
+        body = args.get("body")
+        return query_api(method, path, body, api_base_url, api_key)
     else:
         return f"Error: Unknown tool - {name}"
 
@@ -269,16 +399,20 @@ def call_llm_with_tools(
     api_base: str,
     model: str,
     project_root: Path,
+    api_base_url: str = "",
+    api_key_lms: str = "",
     timeout: int = 60,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     """Call the LLM with tool support and agentic loop.
 
     Args:
         question: The user's question.
-        api_key: API key for authentication.
-        api_base: Base URL of the API.
+        api_key: API key for LLM authentication.
+        api_base: Base URL of the LLM API.
         model: Model name to use.
         project_root: Absolute path to project root.
+        api_base_url: Base URL for query_api (backend).
+        api_key_lms: API key for query_api authentication (LMS_API_KEY).
         timeout: Request timeout in seconds.
 
     Returns:
@@ -375,7 +509,9 @@ def call_llm_with_tools(
                 )
 
                 # Execute the tool
-                result = execute_tool(tool_name, tool_args, project_root)
+                result = execute_tool(
+                    tool_name, tool_args, project_root, api_base_url, api_key_lms
+                )
 
                 # Record the tool call for output
                 tool_calls_list.append(
@@ -439,17 +575,27 @@ def main() -> None:
 
     question = sys.argv[1]
 
-    # Load configuration
+    # Load LLM configuration
     api_key, api_base, model = get_llm_config()
+
+    # Load backend API configuration
+    lms_api_key, agent_api_base_url = get_api_config()
 
     project_root = Path(__file__).parent
 
     print(f"Using model: {model}", file=sys.stderr)
     print(f"Question: {question}", file=sys.stderr)
+    print(f"Backend API URL: {agent_api_base_url}", file=sys.stderr)
 
     # Call the LLM with tools
     answer, source, tool_calls_list = call_llm_with_tools(
-        question, api_key, api_base, model, project_root
+        question,
+        api_key,
+        api_base,
+        model,
+        project_root,
+        agent_api_base_url,
+        lms_api_key,
     )
 
     # Output the result as JSON
@@ -460,4 +606,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

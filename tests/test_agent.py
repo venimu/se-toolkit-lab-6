@@ -96,6 +96,67 @@ class TestAgentOutput:
             f"Answer should contain '4' or 'four'. Got: {data['answer']}"
         )
 
+    def test_agent_uses_read_file_for_merge_conflict(self):
+        """Test that agent uses read_file tool when asked about merge conflicts.
+
+        This test verifies that the agent:
+        1. Uses the read_file tool to read wiki files
+        2. Returns a source reference to wiki/git-workflow.md
+        """
+        stdout, stderr, returncode = run_agent("How do you resolve a merge conflict?")
+
+        assert returncode == 0, f"Agent exited with code {returncode}:\n{stderr}"
+
+        data = json.loads(stdout)
+
+        # Verify tool_calls is not empty and contains read_file
+        assert "tool_calls" in data, "Missing 'tool_calls' field in output"
+        assert len(data["tool_calls"]) > 0, "Expected at least one tool call"
+
+        tool_names = [call.get("tool") for call in data["tool_calls"]]
+        assert "read_file" in tool_names, (
+            f"Expected 'read_file' in tool calls. Got: {tool_names}"
+        )
+
+        # Verify source field contains wiki/git-workflow.md
+        assert "source" in data, "Missing 'source' field in output"
+        assert "wiki/git-workflow.md" in data["source"], (
+            f"Expected 'wiki/git-workflow.md' in source. Got: {data['source']}"
+        )
+
+    def test_agent_uses_list_files_for_wiki_exploration(self):
+        """Test that agent uses list_files tool when asked about wiki contents.
+
+        This test verifies that the agent:
+        1. Uses the list_files tool to explore the wiki directory
+        2. Returns information about files in the wiki
+        """
+        stdout, stderr, returncode = run_agent("What files are in the wiki?")
+
+        assert returncode == 0, f"Agent exited with code {returncode}:\n{stderr}"
+
+        data = json.loads(stdout)
+
+        # Verify tool_calls is not empty and contains list_files
+        assert "tool_calls" in data, "Missing 'tool_calls' field in output"
+        assert len(data["tool_calls"]) > 0, "Expected at least one tool call"
+
+        tool_names = [call.get("tool") for call in data["tool_calls"]]
+        assert "list_files" in tool_names, (
+            f"Expected 'list_files' in tool calls. Got: {tool_names}"
+        )
+
+        # Verify at least one tool call used path="wiki"
+        list_files_calls = [
+            call
+            for call in data["tool_calls"]
+            if call.get("tool") == "list_files"
+            and call.get("args", {}).get("path") == "wiki"
+        ]
+        assert len(list_files_calls) > 0, (
+            "Expected at least one list_files call with path='wiki'"
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -317,17 +317,20 @@ Guide:
 - API data: query_api("GET", "/endpoint/")
 - Bugs: query_api() then read_file()
 - Auth: query_api() then say 401 without auth
-- Request journey: Read docker-compose.yml, caddy/Caddyfile, Dockerfile, main.py
+- Request journey: Read docker-compose.yml, caddy/Caddyfile, Dockerfile (root!), backend/app/main.py. Trace: Browser -> Caddy (42002) -> FastAPI (8000) -> Auth -> Router -> ORM -> PostgreSQL (5432) -> back
+- ETL comparison: Read backend/app/etl.py AND backend/app/routers/*.py, compare error handling
 
 FACTS:
 - API uses Bearer token auth
 - No auth = 401, With auth = 200
 - query_api always uses auth
+- Dockerfile is at project root, not in backend/
 
 RULES:
 1. End EVERY answer with: SOURCE: path/to/file
-2. Give complete answers - no "let me check"
+2. Give COMPLETE answers - no "let me check" or "let me continue"
 3. Use tools for data questions
+4. For request journey: read ALL files first, then answer
 
 Format:
 [Your answer here]
@@ -373,9 +376,8 @@ def extract_source_from_answer(answer: str) -> str:
 
     Looks for patterns like:
     - SOURCE: wiki/file.md#anchor
-    - Source: wiki/file.md#anchor
-    - source: wiki/file.md#anchor
-    - SOURCE: backend/app/file.py#anchor
+    - SOURCE: wiki/file.md
+    - Source: backend/app/file.py
 
     Args:
         answer: The LLM's answer text.
@@ -384,9 +386,12 @@ def extract_source_from_answer(answer: str) -> str:
         Source reference string, or empty string if not found.
     """
     patterns = [
-        r"SOURCE:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
+        r"SOURCE:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",  # With anchor
+        r"SOURCE:\s*([\w\-/.]+\.[\w]+)",  # Without anchor
         r"Source:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
+        r"Source:\s*([\w\-/.]+\.[\w]+)",
         r"source:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
+        r"source:\s*([\w\-/.]+\.[\w]+)",
     ]
 
     for pattern in patterns:

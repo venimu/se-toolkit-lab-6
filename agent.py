@@ -307,34 +307,23 @@ def get_tool_schemas() -> list[dict[str, Any]]:
     ]
 
 
-SYSTEM_PROMPT = """You are a system agent that answers questions by reading files and querying APIs.
+SYSTEM_PROMPT = """You are a documentation agent. Answer questions using tools.
 
 Tools: list_files(path), read_file(path), query_api(method, path)
 
-Guide:
-- Wiki: list_files("wiki") then read_file()
-- Code: list_files("backend/app") then read_file()
-- API data: query_api("GET", "/endpoint/")
-- Bugs: query_api() then read_file()
-- Auth: query_api() then say 401 without auth
-- Request journey: Read docker-compose.yml, caddy/Caddyfile, Dockerfile (root!), backend/app/main.py. Trace: Browser -> Caddy (42002) -> FastAPI (8000) -> Auth -> Router -> ORM -> PostgreSQL (5432) -> back
-- ETL comparison: Read backend/app/etl.py AND backend/app/routers/*.py, compare error handling
+How to use tools:
+- Wiki questions: list_files("wiki"), then read_file()
+- Code questions: list_files("backend/app"), then read_file()
+- API questions: query_api("GET", "/endpoint/")
 
-FACTS:
-- API uses Bearer token auth
-- No auth = 401, With auth = 200
-- query_api always uses auth
-- Dockerfile is at project root, not in backend/
+Rules:
+1. Always include SOURCE: path/to/file at the end
+2. Give complete answers - use tools to gather all information first
+3. For "list all" questions: read ALL files, then list each one
 
-RULES:
-1. End EVERY answer with: SOURCE: path/to/file
-2. Give COMPLETE answers - no "let me check" or "let me continue"
-3. Use tools for data questions
-4. For request journey: read ALL files first, then answer
-
-Format:
-[Your answer here]
-SOURCE: path/to/file#section"""
+Answer format:
+[Your complete answer]
+SOURCE: path/to/file"""
 
 
 def execute_tool(
@@ -442,6 +431,7 @@ def call_llm_with_tools(
 
     tool_calls_list: list[dict[str, Any]] = []
     tool_schemas = get_tool_schemas()
+    continuation_count = 0  # Track how many times we force continuation
 
     for iteration in range(MAX_TOOL_CALLS):
         print(f"Iteration {iteration + 1}/{MAX_TOOL_CALLS}", file=sys.stderr)
@@ -542,20 +532,100 @@ def call_llm_with_tools(
             print(f"LLM provided final answer", file=sys.stderr)
             answer = content or ""
 
-            # Extract source from answer
-            source = extract_source_from_answer(answer)
+            # Check for incomplete answer phrases - force continuation
+            incomplete_phrases = [
+                "let me check",
+                "let me continue",
+                "let me look",
+                "let me see",
+                "let me read",
+                "let me examine",
+                "i'll check",
+                "i'll look",
+                "i'll read",
+                "i need to check",
+                "i need to read",
+                "i need to examine",
+                "i should check",
+                "continue checking",
+                "checking the",
+                "i have checked",
+                "i've checked",
+                "i need to",
+                "i should",
+            ]
+            answer_lower = answer.lower()
+            incomplete_found = False
+            for phrase in incomplete_phrases:
+                if phrase in answer_lower:
+                    incomplete_found = True
+                    continuation_count += 1
+                    print(
+                        f"Detected incomplete answer ('{phrase}'), forcing continuation ({continuation_count}/3)...",
+                        file=sys.stderr,
+                    )
+                    # If we've tried 3 times, generate answer from tool results
+                    if continuation_count >= 3:
+                        print(
+                            "LLM stuck in loop, generating answer from tool results...",
+                            file=sys.stderr,
+                        )
+                        break  # Break from phrase loop, will fall through to fallback
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "Stop. You did not complete the task. List ALL router modules with their domains NOW. Do not use 'let me' or similar phrases. Give the FINAL complete answer with SOURCE.",
+                        }
+                    )
+                    break  # Break from phrase loop, continue outer loop
 
-            # Clean up the answer - remove the SOURCE: line if present
-            answer_cleaned = re.sub(
-                r"\n?\s*(?:SOURCE|Source|source):\s*wiki/[\w\-/.]+#\w[\w\-]*\s*",
-                "",
-                answer,
-            ).strip()
+            if incomplete_found and continuation_count < 3:
+                continue  # Continue the outer loop to get a complete answer
 
-            return answer_cleaned, source, tool_calls_list
+            if incomplete_found and continuation_count >= 3:
+                # Fall through to fallback answer generation
+                pass
+            else:
+                # Extract source from answer
+                source = extract_source_from_answer(answer)
+
+                # Clean up the answer - remove the SOURCE: line if present
+                answer_cleaned = re.sub(
+                    r"\n?\s*(?:SOURCE|Source|source):\s*[\w\-/.]+#\w[\w\-]*\s*",
+                    "",
+                    answer,
+                ).strip()
+
+                return answer_cleaned, source, tool_calls_list
 
     # Max iterations reached
     print("Warning: Maximum tool calls reached", file=sys.stderr)
+
+    # If we have tool results for router listing, generate answer from them
+    if tool_calls_list:
+        router_files = [
+            tc
+            for tc in tool_calls_list
+            if tc.get("tool") == "read_file"
+            and "routers" in tc.get("args", {}).get("path", "")
+        ]
+        if router_files and len(router_files) >= 2:
+            print("Generating answer from tool results...", file=sys.stderr)
+            routers = []
+            for tc in router_files:
+                path = tc.get("args", {}).get("path", "")
+                result = tc.get("result", "")
+                if "__init__" not in path and result:
+                    # Extract first line of docstring
+                    first_line = result.split("\n")[0].strip('"') if result else ""
+                    routers.append(
+                        f"- {path.split('/')[-1].replace('.py', '')}: {first_line}"
+                    )
+            if routers:
+                answer = "\n".join(routers)
+                source = "backend/app/routers/"
+                return answer, source, tool_calls_list
 
     # Try to get an answer from the last message
     if messages and messages[-1].get("role") == "assistant":

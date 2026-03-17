@@ -191,7 +191,12 @@ def list_files(path: str, project_root: Path) -> str:
 
 
 def query_api(
-    method: str, path: str, body: str | None, api_base_url: str, api_key: str
+    method: str,
+    path: str,
+    body: str | None,
+    api_base_url: str,
+    api_key: str,
+    auth: bool = True,
 ) -> str:
     """Call the backend API and return the response.
 
@@ -201,6 +206,7 @@ def query_api(
         body: Optional JSON request body for POST/PUT requests.
         api_base_url: Base URL of the backend API.
         api_key: API key for authentication.
+        auth: Whether to include Authorization header (default: True).
 
     Returns:
         JSON string with status_code and body, or error message.
@@ -209,8 +215,9 @@ def query_api(
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
     }
+    if auth and api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     try:
         with httpx.Client(timeout=30) as client:
@@ -282,7 +289,7 @@ def get_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "query_api",
-                "description": "Call the backend API to fetch data or test endpoints. Use this for questions about the running system, database contents, API behavior, or HTTP status codes. The API base URL is http://localhost:42002 (or from AGENT_API_BASE_URL env var).",
+                "description": "Call the backend API to fetch data or test endpoints. Use this for questions about the running system, database contents, API behavior, or HTTP status codes. The API base URL is http://localhost:42002 (or from AGENT_API_BASE_URL env var). For testing unauthenticated access, set auth=false.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -299,6 +306,11 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                             "type": "string",
                             "description": "Optional JSON request body for POST/PUT/PATCH requests",
                         },
+                        "auth": {
+                            "type": "boolean",
+                            "description": "Whether to include authentication header. Default: true. Set to false to test unauthenticated access (e.g., 'What status code without auth?').",
+                            "default": True,
+                        },
                     },
                     "required": ["method", "path"],
                 },
@@ -309,17 +321,19 @@ def get_tool_schemas() -> list[dict[str, Any]]:
 
 SYSTEM_PROMPT = """You are a documentation agent. Answer questions using tools.
 
-Tools: list_files(path), read_file(path), query_api(method, path)
+Tools: list_files(path), read_file(path), query_api(method, path, auth)
 
 How to use tools:
 - Wiki questions: list_files("wiki"), then read_file()
 - Code questions: list_files("backend/app"), then read_file()
-- API questions: query_api("GET", "/endpoint/")
+- API data questions: query_api("GET", "/endpoint/", auth=true)
+- Auth/status tests: query_api("GET", "/endpoint/", auth=false) - to test without auth
 
 Rules:
 1. Always include SOURCE: path/to/file at the end
 2. Give complete answers - use tools to gather all information first
 3. For "list all" questions: read ALL files, then list each one
+4. For "without auth" or "status code" questions: use auth=false
 
 Answer format:
 [Your complete answer]
@@ -355,7 +369,8 @@ def execute_tool(
         method = args.get("method", "GET")
         path = args.get("path", "")
         body = args.get("body")
-        return query_api(method, path, body, api_base_url, api_key)
+        auth = args.get("auth", True)  # Default to True for backward compatibility
+        return query_api(method, path, body, api_base_url, api_key, auth)
     else:
         return f"Error: Unknown tool - {name}"
 

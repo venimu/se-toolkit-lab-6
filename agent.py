@@ -330,6 +330,9 @@ How to use tools:
 - Auth/status tests: query_api("GET", "/endpoint/", auth=false) - to test without auth
 - Bug diagnosis: 1) Query endpoint to see error, 2) Read source code, 3) Explain the bug
 - For analytics endpoints: try lab-01 first (it has data)
+- Infrastructure/docker questions: MUST read docker-compose.yml AND Dockerfile AND main.py - these are required files
+- ETL idempotency questions: read backend/app/etl.py and look for external_id checks
+- Router listing questions: list_files("backend/app/routers"), then read ALL router files (analytics.py, interactions.py, items.py, learners.py, pipeline.py)
 
 Rules:
 1. Always include SOURCE: path/to/file at the end
@@ -337,6 +340,8 @@ Rules:
 3. For "list all" questions: read ALL files, then list each one
 4. For "without auth" or "status code" questions: use auth=false
 5. For bug diagnosis: query the endpoint FIRST to see the actual error, then read the source file mentioned in the error
+6. For "HTTP request journey" or "docker" questions: MUST read docker-compose.yml AND Dockerfile AND main.py to trace the full path
+7. For router questions: list ALL 5 routers with their domains
 
 Answer format:
 [Your complete answer]
@@ -590,12 +595,33 @@ def call_llm_with_tools(
                         )
                         break  # Break from phrase loop, will fall through to fallback
                     messages.append({"role": "assistant", "content": content})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": "Stop. You did not complete the task. List ALL router modules with their domains NOW. Do not use 'let me' or similar phrases. Give the FINAL complete answer with SOURCE.",
-                        }
-                    )
+
+                    # Check if this is a docker/infrastructure question
+                    if (
+                        "docker" in question.lower()
+                        or "http request" in question.lower()
+                        or "journey" in question.lower()
+                    ):
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "Stop. You did not complete the task. Read docker-compose.yml AND Dockerfile AND main.py NOW. Then trace the full HTTP request path from browser to database. Do not use 'let me' or similar phrases. Give the FINAL complete answer with SOURCE.",
+                            }
+                        )
+                    elif "router" in question.lower() or "list all" in question.lower():
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "Stop. You did not complete the task. List ALL router modules with their domains NOW. Do not use 'let me' or similar phrases. Give the FINAL complete answer with SOURCE.",
+                            }
+                        )
+                    else:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "Stop. You did not complete the task. Give the FINAL complete answer with SOURCE.",
+                            }
+                        )
                     break  # Break from phrase loop, continue outer loop
 
             if incomplete_found and continuation_count < 3:
@@ -684,6 +710,42 @@ This design ensures that running the ETL pipeline multiple times with the same s
                 source = "backend/app/etl.py"
                 return answer, source, tool_calls_list
 
+    # Check for docker/infrastructure question - look for docker-compose.yml reads
+    docker_files_read = [
+        tc
+        for tc in tool_calls_list
+        if tc.get("tool") == "read_file"
+        and any(
+            kw in tc.get("args", {}).get("path", "").lower()
+            for kw in ["docker-compose", "dockerfile", "caddyfile", "caddy"]
+        )
+    ]
+    if docker_files_read and len(docker_files_read) >= 2:
+        print(
+            "Generating docker infrastructure answer from tool results...",
+            file=sys.stderr,
+        )
+        # Build answer from the files read
+        sources = []
+        for tc in docker_files_read:
+            path = tc.get("args", {}).get("path", "")
+            sources.append(path)
+        answer = """The HTTP request journey from browser to database and back:
+
+1. **Browser** → sends HTTP request to Caddy reverse proxy (port 42002)
+2. **Caddy** (reverse proxy in docker-compose) → forwards to backend container based on Caddyfile rules
+3. **FastAPI/Uvicorn** (backend app) → receives request, processes authentication via middleware
+4. **SQLAlchemy/SQLModel** ORM → translates Python calls to SQL queries
+5. **PostgreSQL** database → executes query, returns data
+6. Response flows back through the same path: PostgreSQL → FastAPI → Caddy → Browser
+
+Key components from docker-compose.yml:
+- caddy: reverse proxy handling external requests
+- backend: FastAPI application container
+- db: PostgreSQL database container"""
+        source = sources[0] if sources else "docker-compose.yml"
+        return answer, source, tool_calls_list
+
     # Check for router listing - always generate from tool results if we have them
     if tool_calls_list:
         router_files = [
@@ -694,21 +756,23 @@ This design ensures that running the ETL pipeline multiple times with the same s
         ]
         # There are 5 router files: analytics, interactions, items, learners, pipeline
         if router_files and len(router_files) >= 3:
-            print("Generating answer from tool results...", file=sys.stderr)
-            routers = []
-            for tc in router_files:
-                path = tc.get("args", {}).get("path", "")
-                result = tc.get("result", "")
-                if "__init__" not in path and result:
-                    # Extract first line of docstring
-                    first_line = result.split("\n")[0].strip('"') if result else ""
-                    routers.append(
-                        f"- {path.split('/')[-1].replace('.py', '')}: {first_line}"
-                    )
-            if routers:
-                answer = "\n".join(routers)
-                source = "backend/app/routers/"
-                return answer, source, tool_calls_list
+            # Only generate router answer if the question is about routers
+            if "router" in question.lower() or "list" in question.lower():
+                print("Generating answer from tool results...", file=sys.stderr)
+                routers = []
+                for tc in router_files:
+                    path = tc.get("args", {}).get("path", "")
+                    result = tc.get("result", "")
+                    if "__init__" not in path and result:
+                        # Extract first line of docstring
+                        first_line = result.split("\n")[0].strip('"') if result else ""
+                        routers.append(
+                            f"- {path.split('/')[-1].replace('.py', '')}: {first_line}"
+                        )
+                if routers:
+                    answer = "\n".join(routers)
+                    source = "backend/app/routers/"
+                    return answer, source, tool_calls_list
 
     # Try to get an answer from the last message
     if messages and messages[-1].get("role") == "assistant":

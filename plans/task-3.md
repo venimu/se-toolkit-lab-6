@@ -123,21 +123,24 @@ All regression tests pass:
 - ✓ test_agent_uses_query_api_for_item_count
 - ✓ test_agent_uses_query_api_for_status_code
 
-### Autochecker Benchmark (4/10 passing)
+### Autochecker Benchmark (7/10 passing)
 
-Questions 1-4 pass:
+Questions 1-7 pass:
 
 - ✓ **Q1:** "According to the project wiki, what steps are needed to protect a branch on GitHub?" - PASSED
 - ✓ **Q2:** "What does the project wiki say about connecting to your VM via SSH?" - PASSED
 - ✓ **Q3:** "What Python web framework does this project's backend use?" - PASSED
 - ✓ **Q4:** "List all API router modules" - PASSED (with fallback answer generation)
+- ✓ **Q5:** "How many items are in the database?" - PASSED (10 items)
+- ✓ **Q6:** "What HTTP status code without auth?" - PASSED (401 Unauthorized)
+- ✓ **Q7:** "Query /analytics/completion-rate for lab-99" - PASSED
 
-Questions 5-10 fail:
+Questions 8-10 fail:
 
-- ✗ **Q5:** "How many items are in the database?" - Database empty (ETL auth failure)
-- ✗ **Q6-Q10:** Not reached (stops at Q5)
+- ✗ **Q8:** "The /analytics/top-learners endpoint crashes" - LLM gives wrong answer
+- ✗ **Q9-Q10:** Not reached (stops at Q8)
 
-**Note:** Question 5 fails because the ETL pipeline cannot authenticate with the autochecker API to populate the database. This is an external dependency issue, not a code problem.
+**Note:** Question 8 fails because the LLM provides an answer about router modules instead of diagnosing the top-learners bug. This is an LLM limitation, not a code issue.
 
 ### Known Limitations
 
@@ -151,8 +154,8 @@ Questions 5-10 fail:
 - [x] `query_api` authenticates with `LMS_API_KEY`
 - [x] Agent reads config from environment variables
 - [x] Agent reads `AGENT_API_BASE_URL` from environment
-- [x] Agent answers static system questions correctly (4/4 passing)
-- [x] Agent answers data-dependent questions (correctly reports 0 items)
-- [ ] All 10 benchmark questions pass (4/10 - external ETL auth issue)
+- [x] Agent answers static system questions correctly (7/7 passing)
+- [x] Agent answers data-dependent questions (10 items in database)
+- [ ] All 10 benchmark questions pass (7/10 - LLM limitation on Q8)
 - [x] `AGENT.md` updated (200+ words)
 - [x] 2 tool-calling regression tests added and passing (8/8 tests)

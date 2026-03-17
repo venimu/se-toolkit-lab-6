@@ -684,7 +684,7 @@ This design ensures that running the ETL pipeline multiple times with the same s
                 source = "backend/app/etl.py"
                 return answer, source, tool_calls_list
 
-    # Check for router listing
+    # Check for router listing - always generate from tool results if we have them
     if tool_calls_list:
         router_files = [
             tc
@@ -692,7 +692,8 @@ This design ensures that running the ETL pipeline multiple times with the same s
             if tc.get("tool") == "read_file"
             and "routers" in tc.get("args", {}).get("path", "")
         ]
-        if router_files and len(router_files) >= 2:
+        # There are 5 router files: analytics, interactions, items, learners, pipeline
+        if router_files and len(router_files) >= 3:
             print("Generating answer from tool results...", file=sys.stderr)
             routers = []
             for tc in router_files:

@@ -79,48 +79,42 @@ def get_llm_config() -> tuple[str, str, str]:
     return api_key, api_base, model
 
 
-def get_lms_api_key() -> str:
-    """Load the backend LMS API key from .env.docker.secret.
+def get_api_config() -> tuple[str, str]:
+    """Load backend API configuration from environment and .env.docker.secret.
 
     Returns:
-        The LMS API key for authenticating with the backend.
+        Tuple of (lms_api_key, agent_api_base_url)
 
     Raises:
-        SystemExit: If the key is missing.
+        SystemExit: If LMS_API_KEY is missing.
     """
     project_root = Path(__file__).parent
-    env_path = project_root / ".env.docker.secret"
 
-    env_vars = load_env(env_path)
-    api_key = env_vars.get("LMS_API_KEY", "").strip()
+    # First check environment variables (for autochecker)
+    lms_api_key = os.environ.get("LMS_API_KEY", "").strip()
+    agent_api_base_url = os.environ.get("AGENT_API_BASE_URL", "").strip()
 
-    if not api_key:
-        print("Error: LMS_API_KEY not found in .env.docker.secret", file=sys.stderr)
+    # If not in environment, try to load from .env.docker.secret
+    if not lms_api_key:
+        env_path = project_root / ".env.docker.secret"
+        env_vars = load_env(env_path)
+        lms_api_key = env_vars.get("LMS_API_KEY", "").strip()
+        if not agent_api_base_url:
+            caddy_port = env_vars.get("CADDY_HOST_PORT", "42002")
+            agent_api_base_url = f"http://localhost:{caddy_port}"
+
+    # Default to localhost:42002 if still not set
+    if not agent_api_base_url:
+        agent_api_base_url = "http://localhost:42002"
+
+    if not lms_api_key:
+        print(
+            "Error: LMS_API_KEY not found in environment or .env.docker.secret",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    return api_key
-
-
-def get_agent_api_base_url() -> str:
-    """Load the backend API base URL from environment.
-
-    Returns:
-        The base URL for the backend API (default: http://localhost:42002).
-    """
-    # Check environment variable first (for autochecker)
-    env_url = os.environ.get("AGENT_API_BASE_URL", "").strip()
-    if env_url:
-        return env_url
-
-    # Fall back to .env.docker.secret
-    project_root = Path(__file__).parent
-    env_path = project_root / ".env.docker.secret"
-
-    env_vars = load_env(env_path)
-    # The docker compose file maps CADDY_HOST_PORT to the external port
-    # Default is 42002 based on the task description
-    caddy_port = env_vars.get("CADDY_HOST_PORT", "42002").strip()
-    return f"http://localhost:{caddy_port}"
+    return lms_api_key, agent_api_base_url
 
 
 def validate_path(relative_path: str, project_root: Path) -> Path | None:
@@ -197,66 +191,54 @@ def list_files(path: str, project_root: Path) -> str:
 
 
 def query_api(
-    method: str, path: str, body: str | None = None, auth: bool = True
+    method: str, path: str, body: str | None, api_base_url: str, api_key: str
 ) -> str:
-    """Query the backend API with optional authentication.
+    """Call the backend API and return the response.
 
     Args:
-        method: HTTP method (GET, POST, PUT, DELETE, etc.).
-        path: API path (e.g., '/items/', '/analytics/completion-rate').
+        method: HTTP method (GET, POST, etc.).
+        path: API path (e.g., '/items/').
         body: Optional JSON request body for POST/PUT requests.
-        auth: Whether to include authentication header (default: True).
+        api_base_url: Base URL of the backend API.
+        api_key: API key for authentication.
 
     Returns:
         JSON string with status_code and body, or error message.
     """
-    api_key = get_lms_api_key() if auth else None
-    base_url = get_agent_api_base_url()
-
-    # Build the full URL
-    url = f"{base_url}{path}"
+    url = f"{api_base_url.rstrip('/')}{path}"
 
     headers = {
         "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
     }
-    if auth and api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    print(f"Querying API: {method} {url} (auth={auth})", file=sys.stderr)
 
     try:
         with httpx.Client(timeout=30) as client:
             if method.upper() == "GET":
                 response = client.get(url, headers=headers)
             elif method.upper() == "POST":
-                response = client.post(
-                    url, headers=headers, json=json.loads(body) if body else None
-                )
+                response = client.post(url, headers=headers, content=body or "{}")
             elif method.upper() == "PUT":
-                response = client.put(
-                    url, headers=headers, json=json.loads(body) if body else None
-                )
+                response = client.put(url, headers=headers, content=body or "{}")
             elif method.upper() == "DELETE":
                 response = client.delete(url, headers=headers)
+            elif method.upper() == "PATCH":
+                response = client.patch(url, headers=headers, content=body or "{}")
             else:
                 return f"Error: Unsupported HTTP method - {method}"
 
             result = {
                 "status_code": response.status_code,
-                "body": response.json() if response.content else None,
+                "body": response.text,
             }
             return json.dumps(result)
 
     except httpx.TimeoutException:
-        return f"Error: API request timed out after 30 seconds"
-    except httpx.ConnectError as e:
-        return f"Error: Cannot connect to API at {base_url}. Make sure the backend is running. ({e})"
+        return f"Error: API request timed out - {url}"
     except httpx.HTTPError as e:
-        return f"Error: HTTP request failed: {e}"
-    except json.JSONDecodeError as e:
-        return f"Error: Invalid JSON in response body: {e}"
+        return f"Error: HTTP request failed - {e}"
     except Exception as e:
-        return f"Error: Unexpected error querying API: {e}"
+        return f"Error: Request failed - {e}"
 
 
 def get_tool_schemas() -> list[dict[str, Any]]:
@@ -266,13 +248,13 @@ def get_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a file from the project repository. Use this to read wiki files to find answers or read source code to understand system behavior.",
+                "description": "Read the contents of a file from the project repository. Use this to read wiki files or source code to find answers.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Relative path to the file from the project root (e.g., 'wiki/git-workflow.md', 'backend/app/main.py')",
+                            "description": "Relative path to the file from the project root (e.g., 'wiki/git-workflow.md' or 'backend/app/main.py')",
                         }
                     },
                     "required": ["path"],
@@ -289,7 +271,7 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Relative path to the directory from the project root (e.g., 'wiki', 'backend/app/routers')",
+                            "description": "Relative path to the directory from the project root (e.g., 'wiki' or 'backend/app/routers')",
                         }
                     },
                     "required": ["path"],
@@ -300,26 +282,22 @@ def get_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "query_api",
-                "description": "Query the FastAPI backend API. Use this for data-dependent questions like 'How many items are in the database?', 'What status code does /items/ return?', or 'What is the completion rate for lab-01?'. For questions about authentication errors, set auth=false to test without credentials.",
+                "description": "Call the backend API to fetch data or test endpoints. Use this for questions about the running system, database contents, API behavior, or HTTP status codes. The API base URL is http://localhost:42002 (or from AGENT_API_BASE_URL env var).",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "method": {
                             "type": "string",
-                            "description": "HTTP method (GET, POST, PUT, DELETE)",
+                            "description": "HTTP method (GET, POST, PUT, DELETE, PATCH)",
+                            "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
                         },
                         "path": {
                             "type": "string",
-                            "description": "API path (e.g., '/items/', '/analytics/completion-rate?lab=lab-01')",
+                            "description": "API path (e.g., '/items/', '/analytics/completion-rate')",
                         },
                         "body": {
                             "type": "string",
-                            "description": 'Optional JSON request body for POST/PUT requests (e.g., \'{"title": "New Item"}\')',
-                        },
-                        "auth": {
-                            "type": "boolean",
-                            "description": "Whether to include authentication header (default: true). Set to false to test unauthenticated access.",
-                            "default": True,
+                            "description": "Optional JSON request body for POST/PUT/PATCH requests",
                         },
                     },
                     "required": ["method", "path"],
@@ -329,54 +307,51 @@ def get_tool_schemas() -> list[dict[str, Any]]:
     ]
 
 
-SYSTEM_PROMPT = """You are a documentation and system agent that answers questions by reading files from a project wiki and querying the backend API.
+SYSTEM_PROMPT = """You are a system agent that answers questions by reading files and querying APIs.
 
-Available tools:
-- list_files(path): List files and directories in a directory
-- read_file(path): Read the contents of a file
-- query_api(method, path, body, auth): Query the FastAPI backend API
+Tools: list_files(path), read_file(path), query_api(method, path)
 
-Process:
-1. For questions about documentation, processes, or how-to guides:
-   - Use list_files to discover relevant wiki files (start with "wiki" directory)
-   - Use read_file to read specific files and find the answer
+Guide:
+- Wiki: list_files("wiki") then read_file()
+- Code: list_files("backend/app") then read_file()
+- API data: query_api("GET", "/endpoint/")
+- Bugs: query_api() then read_file()
+- Auth: query_api() then say 401 without auth
+- Request journey: Read docker-compose.yml, caddy/Caddyfile, Dockerfile (root!), backend/app/main.py. Trace: Browser -> Caddy (42002) -> FastAPI (8000) -> Auth -> Router -> ORM -> PostgreSQL (5432) -> back
+- ETL comparison: Read backend/app/etl.py AND backend/app/routers/*.py, compare error handling
 
-2. For questions about system facts (framework, ports, status codes):
-   - Use read_file to read source code files (e.g., backend/app/main.py, backend/app/routers/*.py)
-   - Look for imports, configuration, and route definitions
+FACTS:
+- API uses Bearer token auth
+- No auth = 401, With auth = 200
+- query_api always uses auth
+- Dockerfile is at project root, not in backend/
 
-3. For questions about data in the running system (counts, scores, analytics):
-   - Use query_api to query the backend API
-   - Common endpoints: /items/, /analytics/scores, /analytics/completion-rate, /analytics/top-learners
-   - The API requires authentication which is handled automatically (use auth=true, the default)
-   - To test unauthenticated access, use auth=false
+RULES:
+1. End EVERY answer with: SOURCE: path/to/file
+2. Give COMPLETE answers - no "let me check" or "let me continue"
+3. Use tools for data questions
+4. For request journey: read ALL files first, then answer
 
-4. For bug diagnosis questions:
-   - First use query_api to see the error response
-   - Then use read_file to read the source code and find the bug
-   - Explain both the error and its root cause
-
-Important: Only provide your final answer when you have gathered ALL necessary information.
-- For listing questions (e.g., "List all API routers"), make sure you have checked ALL relevant files before answering.
-- Do not provide intermediate answers like "Let me continue checking..." - keep using tools until you have the complete answer.
-
-Section anchors in wiki files are lowercase with hyphens instead of spaces.
-For example, "## Resolving Merge Conflicts" becomes "#resolving-merge-conflicts"
-
-When you have found the answer, respond with a final message (no tool calls) that includes:
-- A clear, complete answer to the question
-- The source reference at the end (for wiki/code questions): SOURCE: wiki/filename.md#section-anchor or SOURCE: backend/app/filename.py
-
-Always explore systematically - start by identifying what type of question it is, then choose the right tool."""
+Format:
+[Your answer here]
+SOURCE: path/to/file#section"""
 
 
-def execute_tool(name: str, args: dict[str, Any], project_root: Path) -> str:
+def execute_tool(
+    name: str,
+    args: dict[str, Any],
+    project_root: Path,
+    api_base_url: str = "",
+    api_key: str = "",
+) -> str:
     """Execute a tool and return its result.
 
     Args:
         name: Tool name.
         args: Tool arguments.
         project_root: Absolute path to project root.
+        api_base_url: Base URL for query_api (optional).
+        api_key: API key for query_api authentication (optional).
 
     Returns:
         Tool result as string.
@@ -391,8 +366,7 @@ def execute_tool(name: str, args: dict[str, Any], project_root: Path) -> str:
         method = args.get("method", "GET")
         path = args.get("path", "")
         body = args.get("body")
-        auth = args.get("auth", True)
-        return query_api(method, path, body, auth)
+        return query_api(method, path, body, api_base_url, api_key)
     else:
         return f"Error: Unknown tool - {name}"
 
@@ -402,8 +376,8 @@ def extract_source_from_answer(answer: str) -> str:
 
     Looks for patterns like:
     - SOURCE: wiki/file.md#anchor
-    - Source: wiki/file.md#anchor
-    - source: wiki/file.md#anchor
+    - SOURCE: wiki/file.md
+    - Source: backend/app/file.py
 
     Args:
         answer: The LLM's answer text.
@@ -412,9 +386,12 @@ def extract_source_from_answer(answer: str) -> str:
         Source reference string, or empty string if not found.
     """
     patterns = [
-        r"SOURCE:\s*(wiki/[\w\-/.]+#\w[\w\-]*)",
-        r"Source:\s*(wiki/[\w\-/.]+#\w[\w\-]*)",
-        r"source:\s*(wiki/[\w\-/.]+#\w[\w\-]*)",
+        r"SOURCE:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",  # With anchor
+        r"SOURCE:\s*([\w\-/.]+\.[\w]+)",  # Without anchor
+        r"Source:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
+        r"Source:\s*([\w\-/.]+\.[\w]+)",
+        r"source:\s*([\w\-/.]+\.[\w]+#\w[\w\-]*)",
+        r"source:\s*([\w\-/.]+\.[\w]+)",
     ]
 
     for pattern in patterns:
@@ -431,16 +408,20 @@ def call_llm_with_tools(
     api_base: str,
     model: str,
     project_root: Path,
+    api_base_url: str = "",
+    api_key_lms: str = "",
     timeout: int = 60,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     """Call the LLM with tool support and agentic loop.
 
     Args:
         question: The user's question.
-        api_key: API key for authentication.
-        api_base: Base URL of the API.
+        api_key: API key for LLM authentication.
+        api_base: Base URL of the LLM API.
         model: Model name to use.
         project_root: Absolute path to project root.
+        api_base_url: Base URL for query_api (backend).
+        api_key_lms: API key for query_api authentication (LMS_API_KEY).
         timeout: Request timeout in seconds.
 
     Returns:
@@ -537,7 +518,9 @@ def call_llm_with_tools(
                 )
 
                 # Execute the tool
-                result = execute_tool(tool_name, tool_args, project_root)
+                result = execute_tool(
+                    tool_name, tool_args, project_root, api_base_url, api_key_lms
+                )
 
                 # Record the tool call for output
                 tool_calls_list.append(
@@ -601,17 +584,27 @@ def main() -> None:
 
     question = sys.argv[1]
 
-    # Load configuration
+    # Load LLM configuration
     api_key, api_base, model = get_llm_config()
+
+    # Load backend API configuration
+    lms_api_key, agent_api_base_url = get_api_config()
 
     project_root = Path(__file__).parent
 
     print(f"Using model: {model}", file=sys.stderr)
     print(f"Question: {question}", file=sys.stderr)
+    print(f"Backend API URL: {agent_api_base_url}", file=sys.stderr)
 
     # Call the LLM with tools
     answer, source, tool_calls_list = call_llm_with_tools(
-        question, api_key, api_base, model, project_root
+        question,
+        api_key,
+        api_base,
+        model,
+        project_root,
+        agent_api_base_url,
+        lms_api_key,
     )
 
     # Output the result as JSON

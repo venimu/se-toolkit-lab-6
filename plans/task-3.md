@@ -2,10 +2,7 @@
 
 ## Overview
 
-This task extends the agent from Task 2 with a new `query_api` tool that allows the LLM to query the deployed FastAPI backend. The agent will answer two new kinds of questions:
-
-1. **Static system facts** - framework, ports, status codes (from source code)
-2. **Data-dependent queries** - item count, scores, analytics (from the running API)
+This task extends the agent from Task 2 by adding a `query_api` tool to interact with the deployed backend API. The agent will answer both static system questions (framework, ports) and data-dependent queries (item count, scores).
 
 ## Implementation Approach
 
@@ -25,8 +22,6 @@ The agent must read all configuration from environment variables (not hardcoded)
 
 ### 2. Tool Schema: `query_api`
 
-I'll add a new tool schema alongside `read_file` and `list_files`:
-
 ```python
 {
     "type": "function",
@@ -38,7 +33,8 @@ I'll add a new tool schema alongside `read_file` and `list_files`:
             "properties": {
                 "method": {"type": "string", "description": "HTTP method (GET, POST, etc.)"},
                 "path": {"type": "string", "description": "API path (e.g., '/items/', '/analytics/completion-rate')"},
-                "body": {"type": "string", "description": "Optional JSON request body for POST/PUT requests"}
+                "body": {"type": "string", "description": "Optional JSON request body for POST/PUT requests"},
+                "auth": {"type": "boolean", "description": "Whether to include authentication (default: true)"}
             },
             "required": ["method", "path"]
         }
@@ -48,41 +44,21 @@ I'll add a new tool schema alongside `read_file` and `list_files`:
 
 ### 3. Tool Implementation
 
-The `query_api` function will:
+The `query_api` function:
 
-1. Read `LMS_API_KEY` from `.env.docker.secret`
-2. Read `AGENT_API_BASE_URL` from environment (default: `http://localhost:42002`)
-3. Make HTTP request with `X-API-Key: {LMS_API_KEY}` header
-4. Return JSON string with `status_code` and `body`
-
-```python
-def query_api(method: str, path: str, body: str | None = None) -> str:
-    """Query the backend API with authentication."""
-    # Load LMS_API_KEY from .env.docker.secret
-    # Build URL from AGENT_API_BASE_URL + path
-    # Make request with X-API-Key header
-    # Return JSON: {"status_code": 200, "body": {...}}
-```
+1. Reads `LMS_API_KEY` from `.env.docker.secret`
+2. Reads `AGENT_API_BASE_URL` from environment (default: `http://localhost:42002`)
+3. Makes HTTP request with `Authorization: Bearer {LMS_API_KEY}` header
+4. Returns JSON string with `status_code` and `body`
 
 ### 4. System Prompt Update
 
-I'll update the system prompt to guide the LLM on tool selection:
+Updated to guide the LLM on tool selection:
 
 - **Wiki questions** (how-to, processes, documentation) → use `read_file` / `list_files`
 - **System facts** (framework, ports, status codes) → use `read_file` on source code
 - **Data queries** (counts, scores, analytics) → use `query_api`
-
-Example guidance:
-> "For questions about the running system's data (e.g., 'How many items?', 'What's the completion rate?'), use `query_api` to query the backend. For questions about code structure or documentation, use `read_file`."
-
-### 5. Error Handling
-
-The tool should handle:
-
-- Missing `LMS_API_KEY` → return error message
-- Connection refused → return error with hint to start backend
-- 401/403 → return error indicating auth issue
-- 404 → return the API's 404 response (useful for debugging)
+- **Bug diagnosis** → use `query_api` first, then `read_file`
 
 ## Data Flow
 
@@ -102,7 +78,7 @@ read_file  query_api
 (wiki)     (backend)
     │         │
     │         ├─► GET http://localhost:42002/items/
-    │         │   Headers: X-API-Key: my-secret-api-key
+    │         │   Headers: Authorization: Bearer my-secret-api-key
     │         └─► {"status_code": 200, "body": [...]}
     │
     └─────────┴──► LLM synthesizes answer
@@ -111,27 +87,26 @@ read_file  query_api
               JSON output
 ```
 
-## Testing Strategy
+## Benchmark Questions (10 total)
 
-### Unit Tests (2 new tests)
+| # | Question Type | Tool Required | Key Challenge |
+|---|---------------|---------------|---------------|
+| 0-1 | Wiki lookup | `read_file` | Source reference formatting |
+| 2-3 | System facts | `read_file` / `list_files` | Finding the right file |
+| 4-5 | Data queries | `query_api` | Tool selection |
+| 6-7 | Bug diagnosis | `query_api` + `read_file` | Multi-step reasoning |
+| 8-9 | LLM judge | `read_file` | Comprehensive explanation |
 
-1. **Test `query_api` for item count:**
-   - Question: "How many items are in the database?"
-   - Expected: `query_api` in tool_calls, answer contains a number > 0
+## Iteration Strategy
 
-2. **Test `query_api` for status code:**
-   - Question: "What HTTP status code does the API return when you request `/items/` without an authentication header?"
-   - Expected: `query_api` in tool_calls, answer contains "401" or "403"
-
-### Benchmark Questions
-
-The 10 questions in `run_eval.py` cover:
-
-- Wiki lookups (questions 0-1) → `read_file`
-- System facts from code (questions 2-3) → `read_file` / `list_files`
-- Data queries (questions 4-5) → `query_api`
-- Bug diagnosis (questions 6-7) → `query_api` + `read_file`
-- Reasoning (questions 8-9) → `read_file` + LLM judge
+1. Implement `query_api` tool
+2. Run `uv run run_eval.py --index 4` (item count question)
+3. If fails, check:
+   - Is backend running? (`docker-compose up`)
+   - Is `LMS_API_KEY` correct?
+   - Is the tool schema clear enough?
+4. Move to next failing question
+5. Repeat until all 10 pass
 
 ## Final Benchmark Results
 

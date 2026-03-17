@@ -157,14 +157,46 @@ class TestAgentOutput:
             "Expected at least one list_files call with path='wiki'"
         )
 
-    def test_agent_uses_query_api_for_item_count(self):
-        """Test that agent uses query_api tool when asked about item count.
+    def test_agent_uses_read_file_for_framework_detection(self):
+        """Test that agent uses read_file tool when asked about the backend framework.
+
+        This test verifies that the agent:
+        1. Uses the read_file tool to examine source code
+        2. Correctly identifies FastAPI as the web framework
+        """
+        stdout, stderr, returncode = run_agent(
+            "What Python web framework does this project's backend use? Read the source code to find out."
+        )
+
+        assert returncode == 0, f"Agent exited with code {returncode}:\n{stderr}"
+
+        data = json.loads(stdout)
+
+        # Verify tool_calls contains read_file
+        assert "tool_calls" in data, "Missing 'tool_calls' field in output"
+        assert len(data["tool_calls"]) > 0, "Expected at least one tool call"
+
+        tool_names = [call.get("tool") for call in data["tool_calls"]]
+        assert "read_file" in tool_names, (
+            f"Expected 'read_file' in tool calls. Got: {tool_names}"
+        )
+
+        # Verify answer mentions FastAPI
+        answer = data.get("answer", "").lower()
+        assert "fastapi" in answer, (
+            f"Answer should mention 'FastAPI'. Got: {data['answer']}"
+        )
+
+    def test_agent_uses_query_api_for_database_questions(self):
+        """Test that agent uses query_api tool when asked about database contents.
 
         This test verifies that the agent:
         1. Uses the query_api tool to query the backend
-        2. Returns an answer with a number > 0
+        2. Returns information from the API response
         """
-        stdout, stderr, returncode = run_agent("How many items are in the database?")
+        stdout, stderr, returncode = run_agent(
+            "How many items are currently stored in the database? Query the running API to find out."
+        )
 
         assert returncode == 0, f"Agent exited with code {returncode}:\n{stderr}"
 
@@ -179,43 +211,13 @@ class TestAgentOutput:
             f"Expected 'query_api' in tool calls. Got: {tool_names}"
         )
 
-        # Verify answer contains a number
-        answer = data.get("answer", "").lower()
+        # Verify answer contains a number (item count)
+        answer = data.get("answer", "")
         import re
 
         numbers = re.findall(r"\d+", answer)
         assert len(numbers) > 0, (
-            f"Answer should contain a number. Got: {data.get('answer')}"
-        )
-
-    def test_agent_uses_query_api_for_status_code(self):
-        """Test that agent uses query_api tool when asked about HTTP status codes.
-
-        This test verifies that the agent:
-        1. Uses the query_api tool to query the backend
-        2. Returns an answer mentioning the status code (401/403)
-        """
-        stdout, stderr, returncode = run_agent(
-            "What HTTP status code does the API return when you request /items/ without an authentication header?"
-        )
-
-        assert returncode == 0, f"Agent exited with code {returncode}:\n{stderr}"
-
-        data = json.loads(stdout)
-
-        # Verify tool_calls contains query_api
-        assert "tool_calls" in data, "Missing 'tool_calls' field in output"
-        assert len(data["tool_calls"]) > 0, "Expected at least one tool call"
-
-        tool_names = [call.get("tool") for call in data["tool_calls"]]
-        assert "query_api" in tool_names, (
-            f"Expected 'query_api' in tool calls. Got: {tool_names}"
-        )
-
-        # Verify answer contains 401 or 403
-        answer = data.get("answer", "").lower()
-        assert "401" in answer or "403" in answer, (
-            f"Answer should contain '401' or '403'. Got: {data.get('answer')}"
+            f"Answer should contain a number (item count). Got: {answer}"
         )
 
 

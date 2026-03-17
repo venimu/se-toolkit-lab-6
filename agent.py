@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 # Maximum number of tool calls per question
-MAX_TOOL_CALLS = 10
+MAX_TOOL_CALLS = 15
 
 
 def load_env(env_path: Path) -> dict[str, str]:
@@ -79,6 +79,50 @@ def get_llm_config() -> tuple[str, str, str]:
     return api_key, api_base, model
 
 
+def get_lms_api_key() -> str:
+    """Load the backend LMS API key from .env.docker.secret.
+
+    Returns:
+        The LMS API key for authenticating with the backend.
+
+    Raises:
+        SystemExit: If the key is missing.
+    """
+    project_root = Path(__file__).parent
+    env_path = project_root / ".env.docker.secret"
+
+    env_vars = load_env(env_path)
+    api_key = env_vars.get("LMS_API_KEY", "").strip()
+
+    if not api_key:
+        print("Error: LMS_API_KEY not found in .env.docker.secret", file=sys.stderr)
+        sys.exit(1)
+
+    return api_key
+
+
+def get_agent_api_base_url() -> str:
+    """Load the backend API base URL from environment.
+
+    Returns:
+        The base URL for the backend API (default: http://localhost:42002).
+    """
+    # Check environment variable first (for autochecker)
+    env_url = os.environ.get("AGENT_API_BASE_URL", "").strip()
+    if env_url:
+        return env_url
+
+    # Fall back to .env.docker.secret
+    project_root = Path(__file__).parent
+    env_path = project_root / ".env.docker.secret"
+
+    env_vars = load_env(env_path)
+    # The docker compose file maps CADDY_HOST_PORT to the external port
+    # Default is 42002 based on the task description
+    caddy_port = env_vars.get("CADDY_HOST_PORT", "42002").strip()
+    return f"http://localhost:{caddy_port}"
+
+
 def validate_path(relative_path: str, project_root: Path) -> Path | None:
     """Validate that a path is within the project directory.
 
@@ -95,7 +139,7 @@ def validate_path(relative_path: str, project_root: Path) -> Path | None:
         if not str(full_path).startswith(str(resolved_root)):
             return None
         return full_path
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return None
 
 
@@ -152,6 +196,69 @@ def list_files(path: str, project_root: Path) -> str:
         return f"Error: Could not list directory - {e}"
 
 
+def query_api(
+    method: str, path: str, body: str | None = None, auth: bool = True
+) -> str:
+    """Query the backend API with optional authentication.
+
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, etc.).
+        path: API path (e.g., '/items/', '/analytics/completion-rate').
+        body: Optional JSON request body for POST/PUT requests.
+        auth: Whether to include authentication header (default: True).
+
+    Returns:
+        JSON string with status_code and body, or error message.
+    """
+    api_key = get_lms_api_key() if auth else None
+    base_url = get_agent_api_base_url()
+
+    # Build the full URL
+    url = f"{base_url}{path}"
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if auth and api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    print(f"Querying API: {method} {url} (auth={auth})", file=sys.stderr)
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                response = client.post(
+                    url, headers=headers, json=json.loads(body) if body else None
+                )
+            elif method.upper() == "PUT":
+                response = client.put(
+                    url, headers=headers, json=json.loads(body) if body else None
+                )
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return f"Error: Unsupported HTTP method - {method}"
+
+            result = {
+                "status_code": response.status_code,
+                "body": response.json() if response.content else None,
+            }
+            return json.dumps(result)
+
+    except httpx.TimeoutException:
+        return f"Error: API request timed out after 30 seconds"
+    except httpx.ConnectError as e:
+        return f"Error: Cannot connect to API at {base_url}. Make sure the backend is running. ({e})"
+    except httpx.HTTPError as e:
+        return f"Error: HTTP request failed: {e}"
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON in response body: {e}"
+    except Exception as e:
+        return f"Error: Unexpected error querying API: {e}"
+
+
 def get_tool_schemas() -> list[dict[str, Any]]:
     """Return the tool schemas for LLM function calling."""
     return [
@@ -159,13 +266,13 @@ def get_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a file from the project repository. Use this to read wiki files to find answers.",
+                "description": "Read the contents of a file from the project repository. Use this to read wiki files to find answers or read source code to understand system behavior.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Relative path to the file from the project root (e.g., 'wiki/git-workflow.md')",
+                            "description": "Relative path to the file from the project root (e.g., 'wiki/git-workflow.md', 'backend/app/main.py')",
                         }
                     },
                     "required": ["path"],
@@ -182,36 +289,85 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Relative path to the directory from the project root (e.g., 'wiki')",
+                            "description": "Relative path to the directory from the project root (e.g., 'wiki', 'backend/app/routers')",
                         }
                     },
                     "required": ["path"],
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_api",
+                "description": "Query the FastAPI backend API. Use this for data-dependent questions like 'How many items are in the database?', 'What status code does /items/ return?', or 'What is the completion rate for lab-01?'. For questions about authentication errors, set auth=false to test without credentials.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "method": {
+                            "type": "string",
+                            "description": "HTTP method (GET, POST, PUT, DELETE)",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "API path (e.g., '/items/', '/analytics/completion-rate?lab=lab-01')",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": 'Optional JSON request body for POST/PUT requests (e.g., \'{"title": "New Item"}\')',
+                        },
+                        "auth": {
+                            "type": "boolean",
+                            "description": "Whether to include authentication header (default: true). Set to false to test unauthenticated access.",
+                            "default": True,
+                        },
+                    },
+                    "required": ["method", "path"],
+                },
+            },
+        },
     ]
 
 
-SYSTEM_PROMPT = """You are a documentation agent that answers questions by reading files from a project wiki.
+SYSTEM_PROMPT = """You are a documentation and system agent that answers questions by reading files from a project wiki and querying the backend API.
 
 Available tools:
 - list_files(path): List files and directories in a directory
 - read_file(path): Read the contents of a file
+- query_api(method, path, body, auth): Query the FastAPI backend API
 
 Process:
-1. Use list_files to discover relevant wiki files (start with "wiki" directory)
-2. Use read_file to read specific files and find the answer
-3. Look for section headers in files (lines starting with #, ##, etc.)
-4. Include the source reference in your answer using the format: wiki/filename.md#section-anchor
+1. For questions about documentation, processes, or how-to guides:
+   - Use list_files to discover relevant wiki files (start with "wiki" directory)
+   - Use read_file to read specific files and find the answer
 
-Section anchors are lowercase with hyphens instead of spaces.
+2. For questions about system facts (framework, ports, status codes):
+   - Use read_file to read source code files (e.g., backend/app/main.py, backend/app/routers/*.py)
+   - Look for imports, configuration, and route definitions
+
+3. For questions about data in the running system (counts, scores, analytics):
+   - Use query_api to query the backend API
+   - Common endpoints: /items/, /analytics/scores, /analytics/completion-rate, /analytics/top-learners
+   - The API requires authentication which is handled automatically (use auth=true, the default)
+   - To test unauthenticated access, use auth=false
+
+4. For bug diagnosis questions:
+   - First use query_api to see the error response
+   - Then use read_file to read the source code and find the bug
+   - Explain both the error and its root cause
+
+Important: Only provide your final answer when you have gathered ALL necessary information.
+- For listing questions (e.g., "List all API routers"), make sure you have checked ALL relevant files before answering.
+- Do not provide intermediate answers like "Let me continue checking..." - keep using tools until you have the complete answer.
+
+Section anchors in wiki files are lowercase with hyphens instead of spaces.
 For example, "## Resolving Merge Conflicts" becomes "#resolving-merge-conflicts"
 
 When you have found the answer, respond with a final message (no tool calls) that includes:
-- A clear answer to the question
-- The source reference at the end: SOURCE: wiki/filename.md#section-anchor
+- A clear, complete answer to the question
+- The source reference at the end (for wiki/code questions): SOURCE: wiki/filename.md#section-anchor or SOURCE: backend/app/filename.py
 
-Always explore the wiki systematically - start by listing files in the wiki directory, then read relevant files."""
+Always explore systematically - start by identifying what type of question it is, then choose the right tool."""
 
 
 def execute_tool(name: str, args: dict[str, Any], project_root: Path) -> str:
@@ -231,6 +387,12 @@ def execute_tool(name: str, args: dict[str, Any], project_root: Path) -> str:
     elif name == "list_files":
         path = args.get("path", "")
         return list_files(path, project_root)
+    elif name == "query_api":
+        method = args.get("method", "GET")
+        path = args.get("path", "")
+        body = args.get("body")
+        auth = args.get("auth", True)
+        return query_api(method, path, body, auth)
     else:
         return f"Error: Unknown tool - {name}"
 
@@ -460,4 +622,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
